@@ -3,10 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "fs";
 import { fileURLToPath } from "url";
-import path from "path";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIELDS_PATH = path.join(__dirname, "fields.js");
+const FIELDS_PATH = fileURLToPath(new URL("./fields.js", import.meta.url));
 
 // Store mutável — começa vazio, preenchido pelo sync_fields ou pelo arquivo existente
 let DEAL_CUSTOM_FIELDS = {};
@@ -30,12 +28,15 @@ function rebuildReverseMaps() {
 
 // Tenta carregar fields.js existente na inicialização
 try {
-  const fieldsUrl = new URL("./fields.js", import.meta.url).href;
-  const mod = await import(fieldsUrl);
+  const mod = await import(new URL("./fields.js", import.meta.url).href);
   DEAL_CUSTOM_FIELDS = mod.DEAL_CUSTOM_FIELDS || {};
   rebuildReverseMaps();
-} catch {
-  // Sem fields.js — funciona sem campos personalizados até rodar sync_fields
+} catch (err) {
+  if (err.code === "ERR_MODULE_NOT_FOUND" || err.message?.includes("Cannot find")) {
+    console.error("[pipedrive-mcp] fields.js não encontrado. Execute sync_fields para sincronizar campos personalizados.");
+  } else {
+    console.error("[pipedrive-mcp] Erro ao carregar fields.js:", err.message);
+  }
 }
 
 const API_KEY = process.env.PIPEDRIVE_API_KEY;
@@ -122,10 +123,13 @@ function resolveCustomFields(fields) {
         }
       }
       if (ids.length > 0) body[field.key] = ids.join(",");
-    } else if (field.type === "double") {
-      body[field.key] = Number(value);
-    } else if (field.type === "user") {
-      body[field.key] = Number(value);
+    } else if (field.type === "double" || field.type === "user") {
+      const num = Number(value);
+      if (isNaN(num)) {
+        errors.push(`"${name}": valor "${value}" não é um número válido.`);
+        continue;
+      }
+      body[field.key] = num;
     } else {
       body[field.key] = String(value);
     }
@@ -1003,88 +1007,96 @@ server.tool(
   "Sincroniza campos personalizados do Pipedrive. Execute após a primeira instalação ou quando adicionar/alterar campos no Pipedrive. Gera o arquivo fields.js com o mapeamento da sua conta.",
   {},
   async () => {
-    // 1. Buscar todos os dealFields da API
-    const data = await pipedriveRequest("/dealFields?limit=500");
-    const allFields = data.data || [];
+    try {
+      // 1. Buscar todos os dealFields da API
+      const data = await pipedriveRequest("/dealFields?limit=500");
+      const allFields = data.data || [];
 
-    // 2. Filtrar campos customizados (key é hash hex de 40 chars)
-    const customFields = allFields.filter((f) => /^[a-f0-9]{40}$/.test(f.key));
+      // 2. Filtrar campos customizados (key é hash hex de 40 chars)
+      const customFields = allFields.filter((f) => /^[a-f0-9]{40}$/.test(f.key));
 
-    if (customFields.length === 0) {
-      return { content: [{ type: "text", text: "Nenhum campo personalizado encontrado nesta conta do Pipedrive." }] };
-    }
-
-    // 3. Montar DEAL_CUSTOM_FIELDS
-    const mapping = {};
-    let enumCount = 0;
-    let setText = 0;
-    let textCount = 0;
-
-    for (const field of customFields) {
-      const entry = { key: field.key, type: field.field_type };
-
-      if ((field.field_type === "enum" || field.field_type === "set") && field.options) {
-        entry.options = {};
-        for (const opt of field.options) {
-          entry.options[opt.label] = opt.id;
-        }
-        if (field.field_type === "enum") enumCount++;
-        else setText++;
-      } else {
-        textCount++;
+      if (customFields.length === 0) {
+        return { content: [{ type: "text", text: "Nenhum campo personalizado encontrado nesta conta do Pipedrive." }] };
       }
 
-      mapping[field.name] = entry;
+      // 3. Montar DEAL_CUSTOM_FIELDS
+      const mapping = {};
+      let enumCount = 0;
+      let setCount = 0;
+      let textCount = 0;
+
+      for (const field of customFields) {
+        const entry = { key: field.key, type: field.field_type };
+
+        if ((field.field_type === "enum" || field.field_type === "set") && field.options) {
+          entry.options = {};
+          for (const opt of field.options) {
+            entry.options[opt.label] = opt.id;
+          }
+          if (field.field_type === "enum") enumCount++;
+          else setCount++;
+        } else {
+          textCount++;
+        }
+
+        mapping[field.name] = entry;
+      }
+
+      // 4. Salvar em fields.js
+      const lines = [
+        "// Mapeamento dos campos personalizados de negócios do Pipedrive",
+        `// Sincronizado automaticamente em ${new Date().toISOString().split("T")[0]}`,
+        "// Para enum/set: options mapeia label → id",
+        "",
+        "export const DEAL_CUSTOM_FIELDS = " + JSON.stringify(mapping, null, 2) + ";",
+        "",
+        "// Mapa reverso: key da API → nome legível",
+        "export const KEY_TO_NAME = {};",
+        "for (const [name, field] of Object.entries(DEAL_CUSTOM_FIELDS)) {",
+        "  KEY_TO_NAME[field.key] = name;",
+        "}",
+        "",
+        "// Mapa reverso para enum/set: key da API → { id → label }",
+        "export const KEY_TO_OPTIONS = {};",
+        "for (const [name, field] of Object.entries(DEAL_CUSTOM_FIELDS)) {",
+        "  if (field.options) {",
+        "    const idToLabel = {};",
+        "    for (const [label, id] of Object.entries(field.options)) {",
+        "      idToLabel[id] = label;",
+        "    }",
+        "    KEY_TO_OPTIONS[field.key] = idToLabel;",
+        "  }",
+        "}",
+        "",
+      ];
+
+      fs.writeFileSync(FIELDS_PATH, lines.join("\n"), "utf-8");
+
+      // 5. Atualizar memória imediatamente (sem reiniciar)
+      DEAL_CUSTOM_FIELDS = mapping;
+      rebuildReverseMaps();
+
+      // 6. Retornar resumo
+      const summary = [
+        `Campos personalizados sincronizados!`,
+        ``,
+        `Total: ${customFields.length} campos`,
+        `  - ${enumCount} enum (seleção única)`,
+        `  - ${setCount} set (múltipla escolha)`,
+        `  - ${textCount} outros (text, double, etc.)`,
+        ``,
+        `Campos carregados na memória — prontos para uso imediato.`,
+      ];
+
+      return { content: [{ type: "text", text: summary.join("\n") }] };
+    } catch (err) {
+      return {
+        content: [{
+          type: "text",
+          text: `Erro ao sincronizar campos: ${err.message}\n\nVerifique:\n1. O token da API (PIPEDRIVE_API_KEY) é válido?\n2. O token tem permissão para acessar campos personalizados?`,
+        }],
+      };
     }
-
-    // 4. Salvar em fields.js
-    const lines = [
-      "// Mapeamento dos campos personalizados de negócios do Pipedrive",
-      `// Sincronizado automaticamente em ${new Date().toISOString().split("T")[0]}`,
-      "// Para enum/set: options mapeia label → id",
-      "",
-      "export const DEAL_CUSTOM_FIELDS = " + JSON.stringify(mapping, null, 2) + ";",
-      "",
-      "// Mapa reverso: key da API → nome legível",
-      "export const KEY_TO_NAME = {};",
-      "for (const [name, field] of Object.entries(DEAL_CUSTOM_FIELDS)) {",
-      "  KEY_TO_NAME[field.key] = name;",
-      "}",
-      "",
-      "// Mapa reverso para enum/set: key da API → { id → label }",
-      "export const KEY_TO_OPTIONS = {};",
-      "for (const [name, field] of Object.entries(DEAL_CUSTOM_FIELDS)) {",
-      "  if (field.options) {",
-      "    const idToLabel = {};",
-      "    for (const [label, id] of Object.entries(field.options)) {",
-      "      idToLabel[id] = label;",
-      "    }",
-      "    KEY_TO_OPTIONS[field.key] = idToLabel;",
-      "  }",
-      "}",
-      "",
-    ];
-
-    fs.writeFileSync(FIELDS_PATH, lines.join("\n"), "utf-8");
-
-    // 5. Atualizar memória imediatamente (sem reiniciar)
-    DEAL_CUSTOM_FIELDS = mapping;
-    rebuildReverseMaps();
-
-    // 6. Retornar resumo
-    const summary = [
-      `✅ Campos personalizados sincronizados!`,
-      ``,
-      `Total: ${customFields.length} campos`,
-      `  • ${enumCount} enum (seleção única)`,
-      `  • ${setText} set (múltipla escolha)`,
-      `  • ${textCount} outros (text, double, etc.)`,
-      ``,
-      `Arquivo salvo em: ${FIELDS_PATH}`,
-      `Campos carregados na memória — prontos para uso imediato.`,
-    ];
-
-    return { content: [{ type: "text", text: summary.join("\n") }] };
   }
 );
 
