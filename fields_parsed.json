@@ -1,0 +1,1065 @@
+[
+  {
+    "key": "b5086d93ee164623499a2732173abd2f8d030f14",
+    "name": "Telefone de atendimento",
+    "type": "enum",
+    "options": [
+      {
+        "id": 266,
+        "label": "Central de Atendimento"
+      },
+      {
+        "id": 261,
+        "label": "Comercial Outbound"
+      },
+      {
+        "id": 263,
+        "label": "Eric Luciano"
+      },
+      {
+        "id": 264,
+        "label": "Niverton Menezes"
+      }
+    ]
+  },
+  {
+    "key": "dcf2ec025b923c340cbaef3768913affb0738e5c",
+    "name": "Responsável por agendar a reunião",
+    "type": "user"
+  },
+  {
+    "key": "0945bdde00c8c57d1c0e52cd360cb76f058dc6e6",
+    "name": "Origem da Oportunidade",
+    "type": "enum",
+    "options": [
+      {
+        "id": 18,
+        "label": "ORG | Automação do @ericluciano"
+      },
+      {
+        "id": 19,
+        "label": "ORG | Automação do @expertintegrado"
+      },
+      {
+        "id": 21,
+        "label": "ORG | SE Bio @ericluciano"
+      },
+      {
+        "id": 85,
+        "label": "ORG | SE Bio @expertintegrado"
+      },
+      {
+        "id": 30,
+        "label": "ORG | Mensagem receptiva de whatsapp"
+      },
+      {
+        "id": 103,
+        "label": "ORG | Palestra Eric Luciano"
+      },
+      {
+        "id": 35,
+        "label": "SS | @ericluciano"
+      },
+      {
+        "id": 36,
+        "label": "SS | @expertintegrado"
+      },
+      {
+        "id": 74,
+        "label": "OUT | Outbound Manual"
+      },
+      {
+        "id": 91,
+        "label": "OUT | Outbound Automático"
+      },
+      {
+        "id": 289,
+        "label": "INDIC | ChatGuru"
+      },
+      {
+        "id": 88,
+        "label": "INDIC | Geral"
+      },
+      {
+        "id": 20,
+        "label": "INDIC | Direta do Eric"
+      },
+      {
+        "id": 120,
+        "label": "BASE | Lead retomou conversa"
+      },
+      {
+        "id": 121,
+        "label": "BASE | Retomada programada"
+      },
+      {
+        "id": 89,
+        "label": "BASE | Campanha de base interna"
+      },
+      {
+        "id": 22,
+        "label": "CROS | Cliente Ativo"
+      },
+      {
+        "id": 23,
+        "label": "CROS | Cliente Inativo"
+      },
+      {
+        "id": 68,
+        "label": "CROS | Downsell de Projetos"
+      },
+      {
+        "id": 70,
+        "label": "CROS | Downsell de Educacional"
+      },
+      {
+        "id": 69,
+        "label": "CROS | Upsell de Educacional"
+      },
+      {
+        "id": 172,
+        "label": "EVENTO | ADVBOX"
+      },
+      {
+        "id": 279,
+        "label": "EVENTO | IA Summit Joinville 2025"
+      },
+      {
+        "id": 64,
+        "label": "EVENTO | Imersão Highticket 23"
+      },
+      {
+        "id": 106,
+        "label": "EVENTO | Imersão Highticket 24"
+      },
+      {
+        "id": 129,
+        "label": "EVENTO | Growth Conference 2024"
+      },
+      {
+        "id": 90,
+        "label": "EVENTO | Nova Era"
+      },
+      {
+        "id": 97,
+        "label": "EVENTO | WebSummit"
+      },
+      {
+        "id": 122,
+        "label": "EVENTO | Eric presencialmente"
+      },
+      {
+        "id": 295,
+        "label": "PUBLI | ADVBOX"
+      },
+      {
+        "id": 300,
+        "label": "PUBLI | G4 Tools"
+      },
+      {
+        "id": 302,
+        "label": "ADS | Facebook Leads"
+      },
+      {
+        "id": 136,
+        "label": "ADS | LP > Formulário"
+      },
+      {
+        "id": 137,
+        "label": "ADS | LP > WhatsApp"
+      },
+      {
+        "id": 86,
+        "label": "ADS | SE LP"
+      },
+      {
+        "id": 87,
+        "label": "ADS | SE Manychat"
+      },
+      {
+        "id": 118,
+        "label": "ADS | WhatsApp > SDR"
+      },
+      {
+        "id": 28,
+        "label": "Lançamento Mentoria Automações Inteligentes"
+      },
+      {
+        "id": 31,
+        "label": "Desconhecido"
+      }
+    ]
+  },
+  {
+    "key": "c35bea7247f83fcb9cdc24abef1e4e793ae79d7d",
+    "name": "Detalhes da origem da oportunidade",
+    "type": "varchar"
+  },
+  {
+    "key": "556319b09132ecf95ed5016f2689fcd35c35eb1c",
+    "name": "Pessoa que indicou",
+    "type": "varchar_auto"
+  },
+  {
+    "key": "07a9dc3d4c97043cd4cc24bf6c66a28157524ae1",
+    "name": "UTM",
+    "type": "varchar"
+  },
+  {
+    "key": "d8cf0aa0ea4d78645ec04c1d2733adf5e8d0e4dc",
+    "name": "Informações gerais",
+    "type": "text"
+  },
+  {
+    "key": "d4a9418be97002929eb03787de8417a0e8c0715e",
+    "name": "Mídias e redes da empresa",
+    "type": "text"
+  },
+  {
+    "key": "cb145b5c6af46b750f8d8806450ec8caa326681e",
+    "name": "Segmento",
+    "type": "enum",
+    "options": [
+      {
+        "id": 139,
+        "label": "Academia e empresas de esporte"
+      },
+      {
+        "id": 140,
+        "label": "Agências em geral"
+      },
+      {
+        "id": 141,
+        "label": "Agência de Marketing"
+      },
+      {
+        "id": 142,
+        "label": "Arte e Cultura"
+      },
+      {
+        "id": 267,
+        "label": "Call Center"
+      },
+      {
+        "id": 143,
+        "label": "Clínica Estética"
+      },
+      {
+        "id": 144,
+        "label": "Clínica Médica"
+      },
+      {
+        "id": 145,
+        "label": "Contabilidade"
+      },
+      {
+        "id": 146,
+        "label": "Consultoria"
+      },
+      {
+        "id": 147,
+        "label": "Educação"
+      },
+      {
+        "id": 148,
+        "label": "Ecommerce"
+      },
+      {
+        "id": 149,
+        "label": "Energia"
+      },
+      {
+        "id": 150,
+        "label": "Entretenimento"
+      },
+      {
+        "id": 151,
+        "label": "Eventos"
+      },
+      {
+        "id": 152,
+        "label": "Imóveis e Construção"
+      },
+      {
+        "id": 153,
+        "label": "Indústria"
+      },
+      {
+        "id": 154,
+        "label": "Infoprodutos e Mentorias"
+      },
+      {
+        "id": 155,
+        "label": "Jurídico"
+      },
+      {
+        "id": 156,
+        "label": "Seguros"
+      },
+      {
+        "id": 157,
+        "label": "Serviços Financeiros"
+      },
+      {
+        "id": 158,
+        "label": "Serviços Gerais"
+      },
+      {
+        "id": 159,
+        "label": "Tecnologia e TI"
+      },
+      {
+        "id": 160,
+        "label": "Turismo e Viagens"
+      },
+      {
+        "id": 161,
+        "label": "Varejo"
+      },
+      {
+        "id": 162,
+        "label": "Vendas"
+      },
+      {
+        "id": 163,
+        "label": "Outros (descrever)"
+      }
+    ]
+  },
+  {
+    "key": "f4b9ae425863e29f71e433290e203ffd1ad20d32",
+    "name": "Nicho (antigo)",
+    "type": "text"
+  },
+  {
+    "key": "48b5492b4f2f40dd29e65025e9d2bb04b92b12dc",
+    "name": "Nicho (detalhes adicionais",
+    "type": "varchar_auto"
+  },
+  {
+    "key": "c493507aa770ddb4be314b91c3e0d4fd8200e0a0",
+    "name": "Produtos que oferece",
+    "type": "text"
+  },
+  {
+    "key": "ae809a09fa42f7b947cd3f6897bb5d5253a34b48",
+    "name": "Total de colaboradores",
+    "type": "enum",
+    "options": [
+      {
+        "id": 185,
+        "label": "1 a 5"
+      },
+      {
+        "id": 186,
+        "label": "6 a 10"
+      },
+      {
+        "id": 187,
+        "label": "11 a 20"
+      },
+      {
+        "id": 188,
+        "label": "20 a 50"
+      },
+      {
+        "id": 189,
+        "label": "51 a 100"
+      },
+      {
+        "id": 190,
+        "label": "101 a 200"
+      },
+      {
+        "id": 191,
+        "label": "201 a 500"
+      },
+      {
+        "id": 192,
+        "label": "501 a 1000"
+      },
+      {
+        "id": 193,
+        "label": "Acima de 1.000"
+      },
+      {
+        "id": 248,
+        "label": "❌ INFORMAÇÃO PENDENTE"
+      }
+    ]
+  },
+  {
+    "key": "19d76e94901913d006699ae2bfc367db29c163e0",
+    "name": "Tamanho da equipe comercial",
+    "type": "double"
+  },
+  {
+    "key": "5a21bff173a48476bb5d8b1f05dfa4e4c6b8cfa5",
+    "name": "Estrutura de colaboradores",
+    "type": "text"
+  },
+  {
+    "key": "89630cb09fa48c406f93f9a2fd1133e566151cae",
+    "name": "Tipo de venda",
+    "type": "set",
+    "options": [
+      {
+        "id": 131,
+        "label": "Agenda reuniões de venda"
+      },
+      {
+        "id": 132,
+        "label": "Vende direto por Whatsapp/Instagram"
+      },
+      {
+        "id": 164,
+        "label": "Vende direto por site"
+      },
+      {
+        "id": 284,
+        "label": "Transfere para outro vendedor"
+      },
+      {
+        "id": 134,
+        "label": "Outro"
+      }
+    ]
+  },
+  {
+    "key": "b2715700bb3a4ca0c8f985a1ae5decd98f1f862a",
+    "name": "Canais de atendimento atuais",
+    "type": "set",
+    "options": [
+      {
+        "id": 272,
+        "label": "Telefone inbound"
+      },
+      {
+        "id": 273,
+        "label": "Telefone outbound"
+      },
+      {
+        "id": 274,
+        "label": "WhatsApp Inbound"
+      },
+      {
+        "id": 275,
+        "label": "WhatsApp Outbound"
+      },
+      {
+        "id": 276,
+        "label": "E-mail outbound"
+      },
+      {
+        "id": 277,
+        "label": "Instagram inbound"
+      },
+      {
+        "id": 278,
+        "label": "Instagram outbound"
+      },
+      {
+        "id": 299,
+        "label": "❌ INFORMAÇÃO PENDENTE"
+      }
+    ]
+  },
+  {
+    "key": "ed7f16c1056e87e24bd7ed5cf887ac2fd22d9761",
+    "name": "Como funciona o processo de qualificação",
+    "type": "text"
+  },
+  {
+    "key": "204b24826dc0b83d15596c020af0940047271726",
+    "name": "Funis de vendas utilizados",
+    "type": "text"
+  },
+  {
+    "key": "d97738c0053b45d0aa3a80c0938b7886651399c1",
+    "name": "Média de leads atendimentos por mês",
+    "type": "enum",
+    "options": [
+      {
+        "id": 194,
+        "label": "Até 100"
+      },
+      {
+        "id": 195,
+        "label": "101 a 200"
+      },
+      {
+        "id": 196,
+        "label": "201 a 500"
+      },
+      {
+        "id": 197,
+        "label": "501 a 1.000"
+      },
+      {
+        "id": 198,
+        "label": "1.001 a 2.000"
+      },
+      {
+        "id": 199,
+        "label": "2.001 a 3.000"
+      },
+      {
+        "id": 200,
+        "label": "3.001 a 4.000"
+      },
+      {
+        "id": 201,
+        "label": "4.001 a 5.000"
+      },
+      {
+        "id": 202,
+        "label": "5.001 a 7.500"
+      },
+      {
+        "id": 203,
+        "label": "7.501 a 10.000"
+      },
+      {
+        "id": 204,
+        "label": "10.001 a 15.000"
+      },
+      {
+        "id": 205,
+        "label": "15.001 a 20.000"
+      },
+      {
+        "id": 206,
+        "label": "Acima de 20.000"
+      },
+      {
+        "id": 249,
+        "label": "❌ INFORMAÇÃO PENDENTE"
+      }
+    ]
+  },
+  {
+    "key": "8213b0f95fcd015515282938bbbe9d7f2f350a49",
+    "name": "Tamanho acumulado da lista de leads",
+    "type": "enum",
+    "options": [
+      {
+        "id": 207,
+        "label": "Não tem lista"
+      },
+      {
+        "id": 208,
+        "label": "Até 1.000"
+      },
+      {
+        "id": 209,
+        "label": "1.000 a 5.000"
+      },
+      {
+        "id": 210,
+        "label": "5.001 a 10.000"
+      },
+      {
+        "id": 211,
+        "label": "10.001 a 20.000"
+      },
+      {
+        "id": 212,
+        "label": "20.001 a 50.000"
+      },
+      {
+        "id": 213,
+        "label": "50.001 a 100.000"
+      },
+      {
+        "id": 214,
+        "label": "Acima de 100.000"
+      },
+      {
+        "id": 255,
+        "label": "❌ INFORMAÇÃO PENDENTE"
+      }
+    ]
+  },
+  {
+    "key": "81fcda97e5721b31ae3762a7d7d5c42bcf375256",
+    "name": "Detalhes sobre volume de Leads e Clientes",
+    "type": "text"
+  },
+  {
+    "key": "dc1db4be9cc7ba451e72973c694082ce25e7b403",
+    "name": "Automações que utiliza atualmente",
+    "type": "text"
+  },
+  {
+    "key": "aa66ed5229ac03a26dd46562b29229844956fe73",
+    "name": "Ferramenta de WhatsApp atual",
+    "type": "enum",
+    "options": [
+      {
+        "id": 243,
+        "label": "Outra"
+      },
+      {
+        "id": 237,
+        "label": "WhatsApp Web"
+      },
+      {
+        "id": 256,
+        "label": "Bitrix 24 (Power Zap)"
+      },
+      {
+        "id": 238,
+        "label": "Botconversa"
+      },
+      {
+        "id": 220,
+        "label": "ChatGuru"
+      },
+      {
+        "id": 244,
+        "label": "Clint"
+      },
+      {
+        "id": 254,
+        "label": "Digisac"
+      },
+      {
+        "id": 219,
+        "label": "Expert Integrado"
+      },
+      {
+        "id": 250,
+        "label": "Letalk"
+      },
+      {
+        "id": 245,
+        "label": "Kommo"
+      },
+      {
+        "id": 239,
+        "label": "ManyChat"
+      },
+      {
+        "id": 246,
+        "label": "RD Conversas (Tallos)"
+      },
+      {
+        "id": 240,
+        "label": "Take Blip"
+      },
+      {
+        "id": 241,
+        "label": "Wati"
+      },
+      {
+        "id": 242,
+        "label": "Zenvia"
+      },
+      {
+        "id": 251,
+        "label": "❌ INFORMAÇÃO PENDENTE"
+      }
+    ]
+  },
+  {
+    "key": "3826c1a1ba8d3007dd543567f103ecf4092e4f05",
+    "name": "CRM atual",
+    "type": "enum",
+    "options": [
+      {
+        "id": 215,
+        "label": "Não utiliza"
+      },
+      {
+        "id": 221,
+        "label": "Active Campaign"
+      },
+      {
+        "id": 222,
+        "label": "Agendor"
+      },
+      {
+        "id": 247,
+        "label": "ADVBOX"
+      },
+      {
+        "id": 223,
+        "label": "Bitrix24"
+      },
+      {
+        "id": 235,
+        "label": "Clint"
+      },
+      {
+        "id": 269,
+        "label": "Exact Sales"
+      },
+      {
+        "id": 288,
+        "label": "Funil de ferramenta de WhatsApp"
+      },
+      {
+        "id": 225,
+        "label": "HubSpot"
+      },
+      {
+        "id": 226,
+        "label": "Kommo"
+      },
+      {
+        "id": 227,
+        "label": "Monday"
+      },
+      {
+        "id": 228,
+        "label": "Moskit"
+      },
+      {
+        "id": 229,
+        "label": "Nectar"
+      },
+      {
+        "id": 230,
+        "label": "Pipedrive"
+      },
+      {
+        "id": 282,
+        "label": "Pipefy"
+      },
+      {
+        "id": 231,
+        "label": "PipeRun"
+      },
+      {
+        "id": 280,
+        "label": "Ploomes"
+      },
+      {
+        "id": 232,
+        "label": "RD Station"
+      },
+      {
+        "id": 233,
+        "label": "Salesforce"
+      },
+      {
+        "id": 234,
+        "label": "Zoho"
+      },
+      {
+        "id": 252,
+        "label": "Outro"
+      },
+      {
+        "id": 253,
+        "label": "❌ INFORMAÇÃO PENDENTE"
+      }
+    ]
+  },
+  {
+    "key": "2a36226e2dbdb520a00ea722e005b86d7c290c80",
+    "name": "Outras ferramentas",
+    "type": "text"
+  },
+  {
+    "key": "56bda3134566fb875bcfdd818a0f062e92eae9c3",
+    "name": "Dores",
+    "type": "text"
+  },
+  {
+    "key": "dda859b434890ba404287188216f515bdc8a8f4d",
+    "name": "Objetivos com a automação",
+    "type": "text"
+  },
+  {
+    "key": "ffe3b60ae854bf6892f158651f3dcd7174919d93",
+    "name": "Oportunidades de melhoria",
+    "type": "text"
+  },
+  {
+    "key": "d4066eb2aa7a5be1eae0aac58c2e9cfe6e44a972",
+    "name": "Tempo de mercado",
+    "type": "text"
+  },
+  {
+    "key": "912203dcdda287756c99116ec35134fbe419aebd",
+    "name": "Empresa (desativado)",
+    "type": "text"
+  },
+  {
+    "key": "b3dc5494f132dd27f85581f4b766f91d8ccaa7fb",
+    "name": "Faturamento mensal",
+    "type": "text"
+  },
+  {
+    "key": "4418e79f94f920a14ce539cb50173b31f4380fb2",
+    "name": "Nível de prioridade da contratação",
+    "type": "enum",
+    "options": [
+      {
+        "id": 98,
+        "label": "Baixa"
+      },
+      {
+        "id": 99,
+        "label": "Média"
+      },
+      {
+        "id": 100,
+        "label": "Alta"
+      },
+      {
+        "id": 101,
+        "label": "Crítica"
+      }
+    ]
+  },
+  {
+    "key": "e5d73528b2f2b2a6faed903a44c5602a88da59c2",
+    "name": "Unidade de Negócio",
+    "type": "enum",
+    "options": [
+      {
+        "id": 76,
+        "label": "Não definido"
+      },
+      {
+        "id": 16,
+        "label": "Saas"
+      },
+      {
+        "id": 17,
+        "label": "Educacional"
+      },
+      {
+        "id": 15,
+        "label": "Projeto"
+      }
+    ]
+  },
+  {
+    "key": "62c41fe41ba2040065f31f079b26665871dc1a69",
+    "name": "CRM que será integrado",
+    "type": "enum",
+    "options": [
+      {
+        "id": 176,
+        "label": "Sem integração"
+      },
+      {
+        "id": 285,
+        "label": "ADVBOX"
+      },
+      {
+        "id": 183,
+        "label": "Bitrix 24"
+      },
+      {
+        "id": 181,
+        "label": "Clint"
+      },
+      {
+        "id": 286,
+        "label": "ChatGuru - Funil"
+      },
+      {
+        "id": 182,
+        "label": "Exact Sales"
+      },
+      {
+        "id": 287,
+        "label": "Expert Integrado - Funil"
+      },
+      {
+        "id": 178,
+        "label": "Hubspot"
+      },
+      {
+        "id": 180,
+        "label": "Kommo"
+      },
+      {
+        "id": 283,
+        "label": "Pipefy (somente V1)"
+      },
+      {
+        "id": 177,
+        "label": "Pipedrive"
+      },
+      {
+        "id": 257,
+        "label": "Piperun (somente V1)"
+      },
+      {
+        "id": 281,
+        "label": "Ploomes"
+      },
+      {
+        "id": 179,
+        "label": "RD Station"
+      },
+      {
+        "id": 270,
+        "label": "Sales Force (somente V1)"
+      },
+      {
+        "id": 184,
+        "label": "Zoho (somente V1)"
+      },
+      {
+        "id": 292,
+        "label": "Customização (Plano Black)"
+      }
+    ]
+  },
+  {
+    "key": "465b392cb72f563e38b36cc6af2262ff49d63c06",
+    "name": "WhatsApp que será integrado",
+    "type": "enum",
+    "options": [
+      {
+        "id": 165,
+        "label": "Expert Integrado"
+      },
+      {
+        "id": 167,
+        "label": "ChatGuru"
+      },
+      {
+        "id": 296,
+        "label": "Digisac"
+      },
+      {
+        "id": 236,
+        "label": "Bitrix24 | Power Zap"
+      },
+      {
+        "id": 168,
+        "label": "Botconversa"
+      },
+      {
+        "id": 297,
+        "label": "Take Blip (somente V1)"
+      },
+      {
+        "id": 166,
+        "label": "Z-API"
+      },
+      {
+        "id": 271,
+        "label": "Customizado (Plano Black)"
+      }
+    ]
+  },
+  {
+    "key": "513713087f8d84c19e42f6c3bfd6b3b187ee127a",
+    "name": "Forma de Pagamento",
+    "type": "text"
+  },
+  {
+    "key": "0a8bc2813fae2593b83e898bd87451054e6888a1",
+    "name": "Especificações do projeto",
+    "type": "text"
+  },
+  {
+    "key": "a73f0b5bdc689c3af3f3e8eacc76e7b7c503e8b2",
+    "name": "Negociações adicionais",
+    "type": "text"
+  },
+  {
+    "key": "fc98f1aa09a019e45f2e54c1f1a26ed7d2b2949b",
+    "name": "Prazo acordado",
+    "type": "text"
+  },
+  {
+    "key": "fe16bf8c498c4c7f79f201a23f4b7a9f2205cba7",
+    "name": "Link do Clickup",
+    "type": "varchar"
+  },
+  {
+    "key": "5144dc60e7de928345b6587bafd7a31c209829b3",
+    "name": "Link da Proposta",
+    "type": "varchar"
+  },
+  {
+    "key": "04d4ee9c80e66389c54d1ec1857d80ddd14f2960",
+    "name": "Briefing Prospecção",
+    "type": "text"
+  },
+  {
+    "key": "21274e04e6c8787c41ca4fb13920d4c7bf21b463",
+    "name": "Status da Prospecção",
+    "type": "set",
+    "options": [
+      {
+        "id": 93,
+        "label": "Mapeado"
+      },
+      {
+        "id": 94,
+        "label": "Iniciado"
+      },
+      {
+        "id": 95,
+        "label": "Perdido"
+      },
+      {
+        "id": 96,
+        "label": "Convertido"
+      }
+    ]
+  },
+  {
+    "key": "a8e2b7173d0bb54f2e2ab90bd52611f9af9e2139",
+    "name": "Canal de Comunicação",
+    "type": "enum",
+    "options": [
+      {
+        "id": 81,
+        "label": "Instaram @ericluciano"
+      },
+      {
+        "id": 82,
+        "label": "Instagram @expertintegrado"
+      },
+      {
+        "id": 83,
+        "label": "WhatsApp"
+      }
+    ]
+  },
+  {
+    "key": "5a051586894fcdd5b1dd1d2bab4624feab888b15",
+    "name": "Resumo Prospecção",
+    "type": "text"
+  },
+  {
+    "key": "d36714d0cd407fdc8aeed7d5c297586cf3666b19",
+    "name": "Temperatura Prospecção",
+    "type": "enum",
+    "options": [
+      {
+        "id": 78,
+        "label": "frio"
+      },
+      {
+        "id": 79,
+        "label": "morno"
+      },
+      {
+        "id": 80,
+        "label": "quente"
+      }
+    ]
+  },
+  {
+    "key": "2fc99d94cd364f5dd3304b71500796ae9bd7cad0",
+    "name": "Insights técnicos",
+    "type": "text"
+  },
+  {
+    "key": "b916e585acf056bdb5a89a8820a17e5f6d1abfdc",
+    "name": "Insigths de Vendas",
+    "type": "text"
+  }
+]
