@@ -40,6 +40,10 @@ try {
 }
 
 const API_KEY = process.env.PIPEDRIVE_API_KEY;
+if (!API_KEY) {
+  console.error("[pipedrive-mcp] ERRO: PIPEDRIVE_API_KEY não configurada. Defina a variável de ambiente antes de iniciar.");
+  process.exit(1);
+}
 const BASE_URL = "https://api.pipedrive.com/v1";
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -74,10 +78,23 @@ async function pipedriveRequest(path, options = {}, retries = 3) {
   const url = `${BASE_URL}${path}${separator}api_token=${API_KEY}`;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
-    const response = await fetch(url, {
-      headers: { "Content-Type": "application/json" },
-      ...options,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        ...options,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      if (fetchErr.name === "AbortError") {
+        throw new Error("Timeout: Pipedrive não respondeu em 30 segundos.");
+      }
+      throw fetchErr;
+    }
+    clearTimeout(timeout);
 
     if (!response.ok && RETRYABLE_STATUSES.includes(response.status) && attempt < retries) {
       const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
@@ -172,7 +189,7 @@ function translateDealFields(deal) {
 
 const server = new McpServer({
   name: "pipedrive-mcp",
-  version: "5.0.0",
+  version: "5.1.0",
 });
 
 // ─── NEGÓCIOS ────────────────────────────────────────────────────────────────
@@ -218,8 +235,11 @@ server.tool(
       let currentStart = 0;
       const pageSize = 500;
       const MAX_RECORDS = 5000;
+      const MAX_REQUESTS = 10;
+      let requestCount = 0;
 
-      while (allDeals.length < MAX_RECORDS) {
+      while (allDeals.length < MAX_RECORDS && requestCount < MAX_REQUESTS) {
+        requestCount++;
         const data = await pipedriveRequest(buildPath(pageSize, currentStart));
         const pageDeals = (data.data || []).map(mapDeal);
         allDeals = allDeals.concat(pageDeals);
@@ -915,6 +935,9 @@ server.tool(
   "Lista todos os campos personalizados disponíveis para negócios, incluindo as opções válidas para campos enum/set.",
   {},
   async () => {
+    if (Object.keys(DEAL_CUSTOM_FIELDS).length === 0) {
+      return { content: [{ type: "text", text: "Nenhum campo personalizado carregado. Execute sync_fields primeiro para sincronizar os campos da sua conta do Pipedrive." }] };
+    }
     const fields = Object.entries(DEAL_CUSTOM_FIELDS).map(([name, f]) => {
       const entry = { nome: name, tipo: f.type };
       if (f.options) entry.opcoes = Object.keys(f.options);
@@ -1042,31 +1065,13 @@ server.tool(
         mapping[field.name] = entry;
       }
 
-      // 4. Salvar em fields.js
+      // 4. Salvar em fields.js (só DEAL_CUSTOM_FIELDS — mapas reversos são reconstruídos em memória)
       const lines = [
         "// Mapeamento dos campos personalizados de negócios do Pipedrive",
         `// Sincronizado automaticamente em ${new Date().toISOString().split("T")[0]}`,
         "// Para enum/set: options mapeia label → id",
         "",
         "export const DEAL_CUSTOM_FIELDS = " + JSON.stringify(mapping, null, 2) + ";",
-        "",
-        "// Mapa reverso: key da API → nome legível",
-        "export const KEY_TO_NAME = {};",
-        "for (const [name, field] of Object.entries(DEAL_CUSTOM_FIELDS)) {",
-        "  KEY_TO_NAME[field.key] = name;",
-        "}",
-        "",
-        "// Mapa reverso para enum/set: key da API → { id → label }",
-        "export const KEY_TO_OPTIONS = {};",
-        "for (const [name, field] of Object.entries(DEAL_CUSTOM_FIELDS)) {",
-        "  if (field.options) {",
-        "    const idToLabel = {};",
-        "    for (const [label, id] of Object.entries(field.options)) {",
-        "      idToLabel[id] = label;",
-        "    }",
-        "    KEY_TO_OPTIONS[field.key] = idToLabel;",
-        "  }",
-        "}",
         "",
       ];
 
