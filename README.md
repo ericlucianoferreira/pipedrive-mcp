@@ -57,13 +57,18 @@ cp .env.example .env
 # Edite .env e coloque seu token
 ```
 
-### 4. Sincronizar campos personalizados
+### 4. Onboarding guiado
 
-Após configurar o token, peça ao Claude para executar a ferramenta `sync_fields`. Isso mapeia automaticamente todos os campos personalizados da sua conta do Pipedrive.
+Após configurar o token, peça ao Claude para iniciar o onboarding. Ele vai guiar você por 3 passos:
 
 ```
-"Sincronize os campos personalizados do Pipedrive"
+"Inicie o onboarding do Pipedrive MCP"
 ```
+
+O onboarding vai:
+1. **Sincronizar campos** — mapeia automaticamente os campos personalizados da sua conta
+2. **Mostrar sua estrutura** — exibe campos, pipelines, etapas e tipos de atividade
+3. **Configurar regras de negócio** — você explica suas regras e o Claude gera o CLAUDE.md
 
 Pronto! O MCP está configurado e pronto para uso.
 
@@ -156,7 +161,8 @@ O MCP cuida da parte **técnica** (comunicação com a API). Para que o agente A
 
 | Ferramenta | Descrição |
 |---|---|
-| `sync_fields` | Sincroniza campos personalizados da conta (executar na primeira vez) |
+| `onboarding` | Guia de configuração inicial — executa na primeira vez para setup completo |
+| `sync_fields` | Sincroniza campos personalizados da conta |
 | `list_deals` | Lista negócios com filtros e paginação |
 | `search_deals` | Busca negócios por termo |
 | `get_deal` | Detalhes de um negócio com campos personalizados |

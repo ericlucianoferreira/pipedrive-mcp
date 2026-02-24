@@ -189,7 +189,7 @@ function translateDealFields(deal) {
 
 const server = new McpServer({
   name: "pipedrive-mcp",
-  version: "5.1.0",
+  version: "5.2.0",
 });
 
 // ─── NEGÓCIOS ────────────────────────────────────────────────────────────────
@@ -1020,6 +1020,113 @@ server.tool(
     }
     if (errors.length > 0) msg += `\n\nAvisos:\n${errors.join("\n")}`;
     return { content: [{ type: "text", text: msg }] };
+  }
+);
+
+// ─── ONBOARDING ──────────────────────────────────────────────────────────────
+
+server.tool(
+  "onboarding",
+  "Guia de configuração inicial do Pipedrive MCP. Execute após instalar o MCP pela primeira vez. Retorna o passo atual do onboarding e instruções do que fazer a seguir.",
+  {},
+  async () => {
+    const fieldsLoaded = Object.keys(DEAL_CUSTOM_FIELDS).length > 0;
+
+    if (!fieldsLoaded) {
+      // PASSO 1: sync_fields ainda não foi executado
+      const msg = [
+        "=== ONBOARDING — Pipedrive MCP ===",
+        "",
+        "Bem-vindo! Este MCP permite que o Claude interaja diretamente com o seu Pipedrive.",
+        "",
+        "PASSO 1 DE 3 — Sincronizar campos personalizados",
+        "",
+        "O primeiro passo é mapear os campos personalizados da sua conta.",
+        "Execute a ferramenta sync_fields agora.",
+        "",
+        'Diga ao Claude: "Execute sync_fields"',
+        "",
+        "Após sincronizar, execute onboarding novamente para o próximo passo.",
+      ];
+      return { content: [{ type: "text", text: msg.join("\n") }] };
+    }
+
+    // PASSO 2: Campos sincronizados — mostrar campos e pedir configuração
+    const fieldsList = Object.entries(DEAL_CUSTOM_FIELDS).map(([name, f]) => {
+      let desc = `  - ${name} (${f.type})`;
+      if (f.options) {
+        const opts = Object.keys(f.options);
+        desc += `\n    Opções: ${opts.join(", ")}`;
+      }
+      return desc;
+    });
+
+    // Buscar pipelines e etapas para contexto
+    let pipelineInfo = "";
+    try {
+      const pipData = await pipedriveRequest("/pipelines");
+      const pipelines = pipData.data || [];
+      for (const p of pipelines) {
+        const stData = await pipedriveRequest(`/stages?pipeline_id=${p.id}`);
+        const stages = (stData.data || []).map((s) => s.name);
+        pipelineInfo += `\n  Pipeline "${p.name}" (ID: ${p.id}):\n    Etapas: ${stages.join(" → ")}`;
+      }
+    } catch {
+      pipelineInfo = "\n  (Não foi possível carregar pipelines)";
+    }
+
+    // Buscar tipos de atividade
+    let activityInfo = "";
+    try {
+      const actData = await pipedriveRequest("/activityTypes");
+      const types = (actData.data || []).map((t) => `${t.name} (${t.key_string})`);
+      activityInfo = types.join(", ");
+    } catch {
+      activityInfo = "(Não foi possível carregar tipos de atividade)";
+    }
+
+    const msg = [
+      "=== ONBOARDING — Pipedrive MCP ===",
+      "",
+      "PASSO 2 DE 3 — Configurar regras de negócio",
+      "",
+      `Campos personalizados sincronizados: ${Object.keys(DEAL_CUSTOM_FIELDS).length} campos`,
+      "",
+      "--- Seus campos personalizados ---",
+      ...fieldsList,
+      "",
+      "--- Seus pipelines e etapas ---",
+      pipelineInfo,
+      "",
+      "--- Tipos de atividade disponíveis ---",
+      activityInfo,
+      "",
+      "=== O QUE FAZER AGORA ===",
+      "",
+      "Para que o Claude saiba operar seu CRM corretamente, você precisa explicar suas regras de negócio.",
+      "Responda as perguntas abaixo (pode ser em texto livre, o Claude vai organizar):",
+      "",
+      "1. PIPELINE: Quais são os critérios para mover um deal de uma etapa para outra?",
+      "   Ex: 'Para mover para Diagnóstico agendado, precisa ter reunião marcada no calendário'",
+      "",
+      "2. CAMPOS OBRIGATÓRIOS: Quais campos devem estar preenchidos em cada etapa?",
+      "   Ex: 'Até a etapa 3, precisa ter Segmento, Origem e Volume de leads preenchidos'",
+      "",
+      "3. MOTIVOS DE PERDA: Quais motivos de perda vocês usam? Quais são reversíveis?",
+      "   Ex: 'Parou de responder (reversível), Contratou concorrente (difícil)'",
+      "",
+      "4. PRODUTOS/SERVIÇOS: Quais são seus produtos, preços e regras de desconto?",
+      "   Ex: 'Plano Gold R$1.497/mês, setup R$6.000, desconto máximo 50% no setup se anual'",
+      "",
+      "5. REGRAS ESPECIAIS: Algo específico do seu processo?",
+      "   Ex: 'Todo deal deve ter próxima atividade agendada', '3 no-shows = nurture'",
+      "",
+      "Após responder, o Claude vai gerar o arquivo CLAUDE.md com suas regras.",
+      "Salve esse arquivo como memória/contexto no Cloud Coworking ou no seu projeto.",
+      "",
+      "Quando terminar, execute onboarding novamente para o passo final.",
+    ];
+    return { content: [{ type: "text", text: msg.join("\n") }] };
   }
 );
 
