@@ -2,6 +2,8 @@
 
 MCP (Model Context Protocol) server para integração com o CRM Pipedrive. Permite que assistentes AI (Claude Code, Claude Desktop, etc.) interajam diretamente com o Pipedrive.
 
+Funciona com **qualquer conta do Pipedrive** — cada usuário configura seu próprio token e sincroniza seus campos personalizados automaticamente.
+
 ## Funcionalidades
 
 - **Negócios**: listar, buscar, criar, atualizar, resumo, histórico
@@ -10,7 +12,7 @@ MCP (Model Context Protocol) server para integração com o CRM Pipedrive. Permi
 - **Atividades**: listar, criar, atualizar
 - **Notas**: criar, listar por negócio
 - **Produtos**: listar, vincular a negócios
-- **Campos personalizados**: listar, atualizar com proteção contra sobrescrita
+- **Campos personalizados**: sincronização automática, listar, atualizar com proteção contra sobrescrita
 - **Pipeline/Etapas**: listar pipelines e etapas
 - **Paginação**: suporte a `start`/`limit` em todos os endpoints de listagem + `buscar_todos` para deals
 
@@ -55,9 +57,37 @@ cp .env.example .env
 # Edite .env e coloque seu token
 ```
 
-```bash
-PIPEDRIVE_API_KEY=seu_token_aqui node index.js
+### 4. Sincronizar campos personalizados
+
+Após configurar o token, peça ao Claude para executar a ferramenta `sync_fields`. Isso mapeia automaticamente todos os campos personalizados da sua conta do Pipedrive.
+
 ```
+"Sincronize os campos personalizados do Pipedrive"
+```
+
+Pronto! O MCP está configurado e pronto para uso.
+
+## Campos personalizados
+
+Cada conta do Pipedrive tem campos personalizados diferentes (com hashes e IDs únicos). O `sync_fields` resolve isso automaticamente.
+
+### Como funciona
+
+1. **`sync_fields`** — busca todos os campos personalizados da sua conta via API e gera o arquivo `fields.js` local
+2. **`get_deal`** — traduz os hashes internos para nomes legíveis (ex: `cb145b...` vira `"Segmento"`)
+3. **`create_deal`** / **`update_deal_fields`** — aceita nomes legíveis e converte para o formato da API
+4. **`list_deal_fields`** — lista todos os campos disponíveis com suas opções
+
+### Quando resincronizar
+
+Execute `sync_fields` novamente quando:
+- Criar novos campos personalizados no Pipedrive
+- Alterar opções de campos enum/set
+- Renomear campos existentes
+
+### Proteção contra sobrescrita
+
+Ao atualizar campos com `update_deal_fields`, campos que já têm valor preenchido **não são sobrescritos** por padrão. O MCP retorna os conflitos para confirmação. Use `force: true` somente após confirmação explícita.
 
 ## Paginação
 
@@ -87,6 +117,7 @@ Para buscar **todos** os deals automaticamente, use `buscar_todos: true` (máx 5
 ## Segurança
 
 - O token **nunca** é commitado no repositório (`.env` está no `.gitignore`)
+- `fields.js` (dados da conta) também está no `.gitignore`
 - Operações `DELETE` são bloqueadas por padrão
 - Campos com valor existente não são sobrescritos sem confirmação explícita (`force: true`)
 
@@ -94,6 +125,7 @@ Para buscar **todos** os deals automaticamente, use `buscar_todos: true` (máx 5
 
 | Ferramenta | Descrição |
 |---|---|
+| `sync_fields` | Sincroniza campos personalizados da conta (executar na primeira vez) |
 | `list_deals` | Lista negócios com filtros e paginação |
 | `search_deals` | Busca negócios por termo |
 | `get_deal` | Detalhes de um negócio com campos personalizados |
@@ -120,5 +152,5 @@ Para buscar **todos** os deals automaticamente, use `buscar_todos: true` (máx 5
 | `list_users` | Lista usuários da equipe |
 | `list_products` | Lista produtos |
 | `add_product_to_deal` | Vincula produto a negócio |
-| `list_deal_fields` | Lista campos personalizados |
+| `list_deal_fields` | Lista campos personalizados mapeados |
 | `update_deal_fields` | Atualiza campos personalizados |

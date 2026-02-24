@@ -1,7 +1,42 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { DEAL_CUSTOM_FIELDS, KEY_TO_NAME, KEY_TO_OPTIONS } from "./fields.js";
+import fs from "fs";
+import { fileURLToPath } from "url";
+import path from "path";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FIELDS_PATH = path.join(__dirname, "fields.js");
+
+// Store mutável — começa vazio, preenchido pelo sync_fields ou pelo arquivo existente
+let DEAL_CUSTOM_FIELDS = {};
+let KEY_TO_NAME = {};
+let KEY_TO_OPTIONS = {};
+
+function rebuildReverseMaps() {
+  KEY_TO_NAME = {};
+  KEY_TO_OPTIONS = {};
+  for (const [name, field] of Object.entries(DEAL_CUSTOM_FIELDS)) {
+    KEY_TO_NAME[field.key] = name;
+    if (field.options) {
+      const idToLabel = {};
+      for (const [label, id] of Object.entries(field.options)) {
+        idToLabel[id] = label;
+      }
+      KEY_TO_OPTIONS[field.key] = idToLabel;
+    }
+  }
+}
+
+// Tenta carregar fields.js existente na inicialização
+try {
+  const fieldsUrl = new URL("./fields.js", import.meta.url).href;
+  const mod = await import(fieldsUrl);
+  DEAL_CUSTOM_FIELDS = mod.DEAL_CUSTOM_FIELDS || {};
+  rebuildReverseMaps();
+} catch {
+  // Sem fields.js — funciona sem campos personalizados até rodar sync_fields
+}
 
 const API_KEY = process.env.PIPEDRIVE_API_KEY;
 const BASE_URL = "https://api.pipedrive.com/v1";
@@ -133,7 +168,7 @@ function translateDealFields(deal) {
 
 const server = new McpServer({
   name: "pipedrive-mcp",
-  version: "4.0.0",
+  version: "5.0.0",
 });
 
 // ─── NEGÓCIOS ────────────────────────────────────────────────────────────────
@@ -958,6 +993,98 @@ server.tool(
     }
     if (errors.length > 0) msg += `\n\nAvisos:\n${errors.join("\n")}`;
     return { content: [{ type: "text", text: msg }] };
+  }
+);
+
+// ─── SINCRONIZAÇÃO DE CAMPOS ─────────────────────────────────────────────────
+
+server.tool(
+  "sync_fields",
+  "Sincroniza campos personalizados do Pipedrive. Execute após a primeira instalação ou quando adicionar/alterar campos no Pipedrive. Gera o arquivo fields.js com o mapeamento da sua conta.",
+  {},
+  async () => {
+    // 1. Buscar todos os dealFields da API
+    const data = await pipedriveRequest("/dealFields?limit=500");
+    const allFields = data.data || [];
+
+    // 2. Filtrar campos customizados (key é hash hex de 40 chars)
+    const customFields = allFields.filter((f) => /^[a-f0-9]{40}$/.test(f.key));
+
+    if (customFields.length === 0) {
+      return { content: [{ type: "text", text: "Nenhum campo personalizado encontrado nesta conta do Pipedrive." }] };
+    }
+
+    // 3. Montar DEAL_CUSTOM_FIELDS
+    const mapping = {};
+    let enumCount = 0;
+    let setText = 0;
+    let textCount = 0;
+
+    for (const field of customFields) {
+      const entry = { key: field.key, type: field.field_type };
+
+      if ((field.field_type === "enum" || field.field_type === "set") && field.options) {
+        entry.options = {};
+        for (const opt of field.options) {
+          entry.options[opt.label] = opt.id;
+        }
+        if (field.field_type === "enum") enumCount++;
+        else setText++;
+      } else {
+        textCount++;
+      }
+
+      mapping[field.name] = entry;
+    }
+
+    // 4. Salvar em fields.js
+    const lines = [
+      "// Mapeamento dos campos personalizados de negócios do Pipedrive",
+      `// Sincronizado automaticamente em ${new Date().toISOString().split("T")[0]}`,
+      "// Para enum/set: options mapeia label → id",
+      "",
+      "export const DEAL_CUSTOM_FIELDS = " + JSON.stringify(mapping, null, 2) + ";",
+      "",
+      "// Mapa reverso: key da API → nome legível",
+      "export const KEY_TO_NAME = {};",
+      "for (const [name, field] of Object.entries(DEAL_CUSTOM_FIELDS)) {",
+      "  KEY_TO_NAME[field.key] = name;",
+      "}",
+      "",
+      "// Mapa reverso para enum/set: key da API → { id → label }",
+      "export const KEY_TO_OPTIONS = {};",
+      "for (const [name, field] of Object.entries(DEAL_CUSTOM_FIELDS)) {",
+      "  if (field.options) {",
+      "    const idToLabel = {};",
+      "    for (const [label, id] of Object.entries(field.options)) {",
+      "      idToLabel[id] = label;",
+      "    }",
+      "    KEY_TO_OPTIONS[field.key] = idToLabel;",
+      "  }",
+      "}",
+      "",
+    ];
+
+    fs.writeFileSync(FIELDS_PATH, lines.join("\n"), "utf-8");
+
+    // 5. Atualizar memória imediatamente (sem reiniciar)
+    DEAL_CUSTOM_FIELDS = mapping;
+    rebuildReverseMaps();
+
+    // 6. Retornar resumo
+    const summary = [
+      `✅ Campos personalizados sincronizados!`,
+      ``,
+      `Total: ${customFields.length} campos`,
+      `  • ${enumCount} enum (seleção única)`,
+      `  • ${setText} set (múltipla escolha)`,
+      `  • ${textCount} outros (text, double, etc.)`,
+      ``,
+      `Arquivo salvo em: ${FIELDS_PATH}`,
+      `Campos carregados na memória — prontos para uso imediato.`,
+    ];
+
+    return { content: [{ type: "text", text: summary.join("\n") }] };
   }
 );
 
