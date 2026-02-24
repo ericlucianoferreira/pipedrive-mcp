@@ -1,0 +1,176 @@
+# CLAUDE.md — [Nome da Empresa] | Pipedrive Agent
+
+Regras operacionais do CRM. Toda acao no Pipedrive DEVE seguir estas regras.
+
+> **Como usar este template:**
+> 1. Copie este arquivo para `CLAUDE.md` no seu projeto ou configure como memoria/contexto no Cloud Coworking
+> 2. Substitua tudo que estiver entre `[colchetes]` pelas informacoes da sua empresa
+> 3. Remova secoes que nao se aplicam ao seu processo
+> 4. Adicione secoes especificas do seu negocio
+
+---
+
+## Pipeline — [N] Etapas
+
+| # | Etapa | Probabilidade | Rotting | Criterio para Mover |
+|---|-------|:---:|:---:|---|
+| 1 | [Nome da etapa 1] | [X]% | [X] dias | [Criterio para o deal estar nesta etapa] |
+| 2 | [Nome da etapa 2] | [X]% | [X] dias | [Criterio para mover para ca] |
+| 3 | [Nome da etapa 3] | [X]% | [X] dias | [Criterio para mover para ca] |
+| 4 | [Nome da etapa 4] | [X]% | [X] dias | [Criterio para mover para ca] |
+
+> **Dica:** Adicione quantas etapas seu pipeline tiver. As probabilidades devem refletir
+> a chance real de fechamento em cada etapa. Os prazos de rotting definem quando um deal
+> parado deve gerar alerta.
+
+### Regras do pipeline
+- Todo deal DEVE ter proxima atividade agendada. Sem excecao.
+- Ao criar deal sem especificar etapa, usar etapa 1 como padrao.
+- Ao mover deal, validar que o criterio da etapa destino foi cumprido.
+- [Adicione suas regras especificas aqui]
+
+---
+
+## Campos Customizados
+
+> **Importante:** Os nomes dos campos abaixo devem ser EXATAMENTE como aparecem no seu Pipedrive.
+> Execute `sync_fields` para mapear todos os campos automaticamente.
+
+### Campos Principais no Deal
+
+| Campo no Pipedrive | Uso | Obrigatorio a partir de |
+|---------------------|-----|------------------------|
+| [Nome do campo 1] | [Descricao do uso] | [Nome da etapa] |
+| [Nome do campo 2] | [Descricao do uso] | [Nome da etapa] |
+| [Nome do campo 3] | [Descricao do uso] | [Nome da etapa] |
+
+### Campos de Discovery (opcionais)
+
+| Campo no Pipedrive | Uso | Tipo |
+|---------------------|-----|------|
+| [Nome do campo] | [Descricao] | text / enum / set |
+
+### Regras de preenchimento
+
+**Campos enum (opcoes fixas):**
+- [Campo X]: usar sempre a opcao mais proxima da realidade
+- [Campo Y]: se prospect nao usa nenhum, marcar "[Opcao padrao]"
+
+**Campos de texto:**
+- [Campo X]: incluir detalhes especificos mencionados pelo prospect
+- Nao inventar informacoes. Se o prospect nao mencionou, deixar vazio.
+
+---
+
+## Motivos de Perda
+
+| # | Motivo | Tipo |
+|---|--------|------|
+| 1 | [Motivo 1] | Reversivel |
+| 2 | [Motivo 2] | Reversivel |
+| 3 | [Motivo 3] | Dificil |
+| 4 | [Motivo 4] | Definitivo |
+
+> **Tipos de motivo:**
+> - **Reversivel:** O prospect pode voltar. Elegivel para reativacao.
+> - **Dificil:** Improvavel, mas possivel em longo prazo.
+> - **Definitivo:** Sem chance de reativacao.
+
+### Regras ao perder deal
+- Motivo de perda e OBRIGATORIO. Nunca perder deal sem motivo.
+- Sempre adicionar nota explicando o contexto da perda.
+- [Regras de reativacao, se houver]
+
+---
+
+## Produtos / Servicos
+
+| Produto | Valor | Observacao |
+|---------|:---:|---|
+| [Produto 1] | R$[X]/mes | [Descricao] |
+| [Produto 2] | R$[X]/mes | [Descricao] |
+
+### Regras comerciais
+- [Ex: Desconto maximo permitido: X%]
+- [Ex: Forma de pagamento preferida: PIX com desconto de X%]
+- [Adicione suas regras de negociacao]
+
+---
+
+## Tipos de Atividade
+
+Ao criar atividade, usar SEMPRE um destes tipos (key da API entre parenteses):
+
+1. [Tipo 1] (`[key_api]`)
+2. [Tipo 2] (`[key_api]`)
+3. [Tipo 3] (`[key_api]`)
+
+> **Dica:** Execute `list_activity_types` no MCP para ver os tipos disponiveis na sua conta.
+
+---
+
+## ICP — Perfil Ideal do Cliente (opcional)
+
+Usar para validar qualificacao de leads:
+- **Segmentos:** [Lista de segmentos-alvo]
+- **Tamanho:** [Faixa de funcionarios]
+- **Faturamento:** [Faturamento minimo]
+- **Decisor:** [Quem e o decisor tipico]
+
+---
+
+## Regras de Comportamento do Agente
+
+### Ao criar deal
+1. Verificar duplicatas (pessoa + organizacao) ANTES de criar.
+2. Titulo padrao: "[Formato do titulo]" (ex: "Nome da Empresa - Produto").
+3. Sempre preencher [campos obrigatorios na criacao].
+4. Criar atividade inicial automaticamente.
+
+### Ao mover deal
+1. Validar que criterio da etapa destino foi cumprido.
+2. Alertar se deal nao tem proxima atividade agendada apos mover.
+3. [Validacoes especificas por etapa]
+
+### Ao perder deal
+1. Exigir motivo de perda.
+2. Adicionar nota com contexto.
+3. [Regras de reativacao]
+
+### Ao analisar pipeline
+1. Usar os prazos de rotting da tabela acima para classificar urgencia.
+2. Deals sem atividade futura = alerta, independente da etapa.
+3. [Metricas especificas que voce acompanha]
+
+### Ao atualizar campos customizados
+1. NUNCA sobrescrever um campo que ja tem valor preenchido, a menos que o usuario peca explicitamente.
+2. Antes de atualizar, verificar o valor atual. Se ja tem dado, pular.
+3. So preencher campos vazios com informacao clara. Nao chutar.
+
+### Ao buscar/exibir dados
+1. Formatar valores em BRL (R$).
+2. Sempre mostrar [campos importantes] quando disponiveis.
+3. [Outras preferencias de exibicao]
+
+---
+
+## Sequences / Cadencias (opcional)
+
+> Se voce usa cadencias de follow-up, documente aqui para o agente saber quando e como criar atividades.
+
+| Sequence | Passos | Duracao | Trigger |
+|----------|:---:|:---:|---|
+| [Nome] | [N] | [X] dias | [Quando dispara] |
+
+---
+
+## Integracoes Externas (opcional)
+
+> Documente integracoes que afetam o fluxo do CRM.
+
+- **[Ferramenta]:** [Como se integra com o Pipedrive]
+- **[Ferramenta]:** [Processo de sincronizacao]
+
+---
+
+*Versao 1.0 — [Data] — [Nome da Empresa]*

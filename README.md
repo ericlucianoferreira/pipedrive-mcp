@@ -114,6 +114,37 @@ O retorno inclui metadados de paginação:
 
 Para buscar **todos** os deals automaticamente, use `buscar_todos: true` (máx 5000 registros).
 
+## Regras de negócio (CLAUDE.md)
+
+O MCP cuida da parte **técnica** (comunicação com a API). Para que o agente AI siga as regras do seu processo comercial, você precisa configurar um arquivo `CLAUDE.md` com suas regras de negócio.
+
+### O que incluir no CLAUDE.md
+
+- Etapas do pipeline com critérios de movimentação
+- Campos obrigatórios por etapa
+- Motivos de perda e regras de reativação
+- Produtos/serviços com preços e regras comerciais
+- Tipos de atividade padronizados
+- ICP (Perfil Ideal do Cliente)
+- Regras de comportamento do agente (criar deal, mover, perder, etc.)
+
+### Como usar
+
+1. Copie o template `CLAUDE.md.example` incluído neste repositório
+2. Preencha com as regras específicas da sua empresa
+3. Configure como:
+   - **Claude Code:** salve como `CLAUDE.md` na raiz do projeto ou em `~/.claude/CLAUDE.md`
+   - **Claude Desktop / Cloud Coworking:** adicione como arquivo de memória/contexto
+
+### fields.js vs CLAUDE.md
+
+| | `fields.js` | `CLAUDE.md` |
+|---|---|---|
+| Para quem | Para o **código** do MCP | Para a **IA** (Claude) |
+| O que contém | Mapeamento técnico de hashes | Regras de negócio |
+| Como gera | `sync_fields` (automático) | Você escreve manualmente |
+| Sem ele | Campos aparecem como hashes | MCP funciona, mas IA não segue suas regras |
+
 ## Segurança
 
 - O token **nunca** é commitado no repositório (`.env` está no `.gitignore`)
