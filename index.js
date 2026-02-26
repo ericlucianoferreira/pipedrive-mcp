@@ -189,7 +189,7 @@ function translateDealFields(deal) {
 
 const server = new McpServer({
   name: "pipedrive-mcp",
-  version: "5.2.0",
+  version: "5.3.0",
 });
 
 // ─── NEGÓCIOS ────────────────────────────────────────────────────────────────
@@ -364,8 +364,9 @@ server.tool(
     pipeline_id: z.number().optional().describe("Novo pipeline (mover entre pipelines)"),
     status: z.enum(["open", "won", "lost"]).optional().describe("Novo status"),
     lost_reason: z.string().optional().describe("Motivo da perda (usado quando status=lost)"),
+    lost_time: z.string().optional().describe("Data/hora da perda no formato 'YYYY-MM-DD HH:MM:SS'. Permite definir data retroativa de perda."),
   },
-  async ({ deal_id, title, value, stage_id, pipeline_id, status, lost_reason }) => {
+  async ({ deal_id, title, value, stage_id, pipeline_id, status, lost_reason, lost_time }) => {
     const body = {};
     if (title) body.title = title;
     if (value !== undefined) body.value = value;
@@ -373,6 +374,7 @@ server.tool(
     if (pipeline_id) body.pipeline_id = pipeline_id;
     if (status) body.status = status;
     if (lost_reason) body.lost_reason = lost_reason;
+    if (lost_time) body.lost_time = lost_time;
     await pipedriveRequest(`/deals/${deal_id}`, {
       method: "PUT",
       body: JSON.stringify(body),
@@ -435,6 +437,97 @@ server.tool(
         proximo_inicio: pagination.next_start || null,
       },
     };
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+server.tool(
+  "get_deal_flow",
+  "Retorna o histórico de mudanças de um deal com parsing inteligente. Extrai mudanças de status (open/lost/won), mudanças de etapa, e timestamps exatos. Útil para descobrir data original de perda, motivo de perda, e rastrear movimentações do deal.",
+  {
+    deal_id: z.number().describe("ID do negócio"),
+    filter: z.enum(["all", "status", "stage"]).optional().default("all").describe("Filtrar tipo de mudança: 'all' = tudo, 'status' = só mudanças open/lost/won, 'stage' = só mudanças de etapa"),
+    limit: z.number().optional().default(100).describe("Quantidade máxima de resultados (máx 500)"),
+  },
+  async ({ deal_id, filter, limit }) => {
+    const effectiveLimit = Math.min(limit, 500);
+    const data = await pipedriveRequest(`/deals/${deal_id}/flow?limit=${effectiveLimit}`);
+    const allItems = data.data || [];
+
+    const statusChanges = [];
+    const stageChanges = [];
+    const allChanges = [];
+
+    for (const item of allItems) {
+      const ts = item.timestamp;
+      // Mudanças em campos do deal
+      if (item.object === "dealChange" && item.data) {
+        const d = item.data;
+        if (d.field_key === "status") {
+          const change = {
+            tipo: "status",
+            timestamp: ts,
+            de: d.old_value,
+            para: d.new_value,
+          };
+          statusChanges.push(change);
+          allChanges.push(change);
+        }
+        if (d.field_key === "stage_id") {
+          const change = {
+            tipo: "etapa",
+            timestamp: ts,
+            de_id: d.old_value,
+            para_id: d.new_value,
+          };
+          stageChanges.push(change);
+          allChanges.push(change);
+        }
+        if (d.field_key === "lost_reason") {
+          const change = {
+            tipo: "motivo_perda",
+            timestamp: ts,
+            de: d.old_value,
+            para: d.new_value,
+          };
+          allChanges.push(change);
+        }
+      }
+      // Atividades e notas também aparecem no flow
+      if (item.object === "activity" && filter === "all") {
+        allChanges.push({
+          tipo: "atividade",
+          timestamp: ts,
+          acao: item.action,
+          dados: { subject: item.data?.subject, type: item.data?.type },
+        });
+      }
+      if (item.object === "note" && filter === "all") {
+        allChanges.push({
+          tipo: "nota",
+          timestamp: ts,
+          acao: item.action,
+        });
+      }
+    }
+
+    let result;
+    if (filter === "status") {
+      result = { mudancas_status: statusChanges, total: statusChanges.length };
+    } else if (filter === "stage") {
+      result = { mudancas_etapa: stageChanges, total: stageChanges.length };
+    } else {
+      result = {
+        resumo: {
+          mudancas_status: statusChanges.length,
+          mudancas_etapa: stageChanges.length,
+          total_eventos: allChanges.length,
+        },
+        mudancas_status: statusChanges,
+        mudancas_etapa: stageChanges,
+        todos_eventos: allChanges,
+      };
+    }
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
@@ -730,6 +823,52 @@ server.tool(
     }));
     const pagination = data.additional_data?.pagination || {};
     const result = {
+      dados: activities,
+      paginacao: {
+        inicio: pagination.start || start,
+        total_nesta_pagina: activities.length,
+        mais_itens: pagination.more_items_in_collection || false,
+        proximo_inicio: pagination.next_start || null,
+      },
+    };
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+server.tool(
+  "list_deal_activities",
+  "Lista TODAS as atividades de um negócio específico (via endpoint /deals/{id}/activities). Mais confiável que list_activities com deal_id, pois filtra corretamente no servidor.",
+  {
+    deal_id: z.number().describe("ID do negócio"),
+    done: z.enum(["0", "1", "all"]).optional().default("all").describe("Filtrar por status: '0' = pendentes, '1' = concluídas, 'all' = todas"),
+    limit: z.number().optional().default(100).describe("Quantidade máxima de resultados (máx 500)"),
+    start: z.number().optional().default(0).describe("Offset para paginação"),
+  },
+  async ({ deal_id, done, limit, start }) => {
+    const effectiveLimit = Math.min(limit, 500);
+    let path = `/deals/${deal_id}/activities?limit=${effectiveLimit}&start=${start}`;
+    if (done !== "all") path += `&done=${done}`;
+    const data = await pipedriveRequest(path);
+    const today = new Date().toISOString().split("T")[0];
+    const activities = (data.data || []).map((a) => ({
+      id: a.id,
+      tipo: a.type,
+      assunto: a.subject,
+      data: a.due_date,
+      hora: a.due_time,
+      concluida: a.done,
+      atrasada: !a.done && a.due_date ? a.due_date < today : false,
+      negocio_id: a.deal_id,
+      negocio: a.deal_title,
+      contato: a.person_name,
+      responsavel_id: a.user_id,
+      responsavel: a.owner_name,
+      nota: a.note,
+    }));
+    const pagination = data.additional_data?.pagination || {};
+    const result = {
+      deal_id: deal_id,
+      total_atividades: activities.length,
       dados: activities,
       paginacao: {
         inicio: pagination.start || start,
