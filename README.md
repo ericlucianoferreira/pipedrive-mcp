@@ -4,6 +4,8 @@ MCP (Model Context Protocol) server para integração com o CRM Pipedrive. Permi
 
 Funciona com **qualquer conta do Pipedrive** — cada usuário configura seu próprio token e sincroniza seus campos personalizados automaticamente.
 
+> **Credenciais são pessoais.** Cada pessoa usa seu próprio token de API do Pipedrive. Nenhuma credencial está incluída neste repositório.
+
 ## Funcionalidades
 
 - **Negócios**: listar, buscar, criar, atualizar, resumo, histórico
