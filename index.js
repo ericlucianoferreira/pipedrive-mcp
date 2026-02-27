@@ -46,6 +46,58 @@ if (!API_KEY) {
 }
 const BASE_URL = "https://api.pipedrive.com/v1";
 
+// ─── TIMEZONE ─────────────────────────────────────────────────────────────────
+// O Pipedrive armazena due_time em UTC. O usuário informa horários em
+// America/Sao_Paulo (GMT-3 no horário de verão, GMT-3 no horário padrão).
+// Esta função converte HH:MM (Brasília) → HH:MM (UTC) para envio à API.
+// Na leitura (list_activities), o MCP exibe o due_time como retornado pela API
+// (UTC), então também convertemos de volta para exibição ao usuário.
+
+const USER_TIMEZONE = process.env.PIPEDRIVE_TIMEZONE || "America/Sao_Paulo";
+
+function localToUtc(timeStr, dateStr) {
+  if (!timeStr || !dateStr) return timeStr;
+  // Monta um Date no fuso do usuário e extrai o UTC equivalente
+  const localDt = new Date(`${dateStr}T${timeStr}:00`);
+  // Calcula o offset do fuso do usuário nesse instante
+  const tzOffset = getTzOffsetMinutes(dateStr, timeStr, USER_TIMEZONE);
+  const utcMs = localDt.getTime() + tzOffset * 60 * 1000;
+  const utcDt = new Date(utcMs);
+  const hh = String(utcDt.getUTCHours()).padStart(2, "0");
+  const mm = String(utcDt.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function utcToLocal(timeStr, dateStr) {
+  if (!timeStr || !dateStr) return timeStr;
+  const utcDt = new Date(`${dateStr}T${timeStr}:00Z`);
+  // Usa Intl para obter o horário local correto no fuso do usuário
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: USER_TIMEZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(utcDt);
+  const hh = parts.find((p) => p.type === "hour")?.value ?? "00";
+  const mm = parts.find((p) => p.type === "minute")?.value ?? "00";
+  return `${hh}:${mm}`;
+}
+
+function getTzOffsetMinutes(dateStr, timeStr, tz) {
+  // Descobre o offset (em minutos) do fuso `tz` em relação ao UTC
+  // para o instante representado por dateStr + timeStr (interpretado como UTC provisoriamente)
+  const probe = new Date(`${dateStr}T${timeStr}:00Z`);
+  const localStr = probe.toLocaleString("en-US", { timeZone: tz, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  // localStr ex: "02/27/2026, 06:00:00"
+  const [datePart, timePart] = localStr.split(", ");
+  const [mo, dy, yr] = datePart.split("/");
+  const [h, mi, s] = timePart.split(":");
+  const localDt = new Date(Date.UTC(+yr, +mo - 1, +dy, +h, +mi, +s));
+  return (probe.getTime() - localDt.getTime()) / 60000;
+}
+
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 const RETRYABLE_STATUSES = [408, 429, 500, 502, 503, 504];
@@ -787,33 +839,90 @@ server.tool(
 
 server.tool(
   "list_activities",
-  "Lista atividades do Pipedrive. Pode filtrar por usuário, tipo, período, negócio e status. Inclui indicador 'atrasada' para atividades vencidas.",
+  "Lista atividades do Pipedrive. Pode filtrar por usuário, tipo, período (due_date), negócio e status. Inclui indicador 'atrasada' para atividades vencidas. Quando start_date/end_date são fornecidos, busca automaticamente todas as páginas e filtra por due_date no lado do servidor.",
   {
     done: z.boolean().optional().default(false).describe("Listar atividades concluídas (false = pendentes)"),
-    limit: z.number().optional().default(100).describe("Quantidade máxima de resultados (máx 500)"),
+    limit: z.number().optional().default(100).describe("Quantidade máxima de resultados por página (máx 500). Ignorado quando start_date/end_date são fornecidos (busca todas as páginas)."),
     start: z.number().optional().default(0).describe("Offset para paginação"),
     user_id: z.number().optional().describe("Filtrar por usuário (ID). Use list_users para ver IDs disponíveis."),
     type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline"]).optional().describe("Filtrar por tipo de atividade"),
-    start_date: z.string().optional().describe("Data inicial do filtro (YYYY-MM-DD)"),
-    end_date: z.string().optional().describe("Data final do filtro (YYYY-MM-DD)"),
+    start_date: z.string().optional().describe("Data inicial do filtro por due_date (YYYY-MM-DD). Filtra no lado do cliente após buscar todas as páginas."),
+    end_date: z.string().optional().describe("Data final do filtro por due_date (YYYY-MM-DD). Filtra no lado do cliente após buscar todas as páginas."),
     deal_id: z.number().optional().describe("Filtrar por negócio (ID)"),
   },
   async ({ done, limit, start, user_id, type, start_date, end_date, deal_id }) => {
+    const today = new Date().toISOString().split("T")[0];
+
+    // Se filtro de data fornecido, busca TODAS as páginas e filtra por due_date no cliente
+    // (A API do Pipedrive filtra start_date/end_date por data de criação, não por due_date)
+    if (start_date || end_date) {
+      const PAGE_SIZE = 500;
+      let allActivities = [];
+      let offset = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        let path = `/activities?done=${done ? 1 : 0}&limit=${PAGE_SIZE}&start=${offset}`;
+        if (user_id) path += `&user_id=${user_id}`;
+        if (type) path += `&type=${type}`;
+        if (deal_id) path += `&deal_id=${deal_id}`;
+        const data = await pipedriveRequest(path);
+        const page = (data.data || []);
+        allActivities = allActivities.concat(page);
+        const pagination = data.additional_data?.pagination || {};
+        hasMore = pagination.more_items_in_collection || false;
+        offset = pagination.next_start || (offset + PAGE_SIZE);
+        if (page.length === 0) hasMore = false;
+      }
+
+      // Filtra por due_date no cliente
+      const filtered = allActivities.filter((a) => {
+        if (!a.due_date) return false;
+        if (start_date && a.due_date < start_date) return false;
+        if (end_date && a.due_date > end_date) return false;
+        return true;
+      });
+
+      const activities = filtered.map((a) => ({
+        id: a.id,
+        tipo: a.type,
+        assunto: a.subject,
+        data: a.due_date,
+        hora: utcToLocal(a.due_time, a.due_date), // converte UTC → Brasília para exibição
+        concluida: a.done,
+        atrasada: !a.done && a.due_date ? a.due_date < today : false,
+        negocio_id: a.deal_id,
+        negocio: a.deal_title,
+        contato: a.person_name,
+        responsavel: a.owner_name,
+      }));
+
+      const result = {
+        dados: activities,
+        paginacao: {
+          total_encontrado: activities.length,
+          total_varrido: allActivities.length,
+          filtro_aplicado: { start_date, end_date },
+          mais_itens: false,
+          proximo_inicio: null,
+        },
+      };
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+
+    // Sem filtro de data: comportamento original com paginação manual
     const effectiveLimit = Math.min(limit, 500);
     let path = `/activities?done=${done ? 1 : 0}&limit=${effectiveLimit}&start=${start}`;
     if (user_id) path += `&user_id=${user_id}`;
     if (type) path += `&type=${type}`;
-    if (start_date) path += `&start_date=${start_date}`;
-    if (end_date) path += `&end_date=${end_date}`;
     if (deal_id) path += `&deal_id=${deal_id}`;
     const data = await pipedriveRequest(path);
-    const today = new Date().toISOString().split("T")[0];
     const activities = (data.data || []).map((a) => ({
       id: a.id,
       tipo: a.type,
       assunto: a.subject,
       data: a.due_date,
-      hora: a.due_time,
+      hora: utcToLocal(a.due_time, a.due_date), // converte UTC → Brasília para exibição
       concluida: a.done,
       atrasada: !a.done && a.due_date ? a.due_date < today : false,
       negocio_id: a.deal_id,
@@ -855,7 +964,7 @@ server.tool(
       tipo: a.type,
       assunto: a.subject,
       data: a.due_date,
-      hora: a.due_time,
+      hora: utcToLocal(a.due_time, a.due_date), // converte UTC → Brasília para exibição
       concluida: a.done,
       atrasada: !a.done && a.due_date ? a.due_date < today : false,
       negocio_id: a.deal_id,
@@ -912,7 +1021,7 @@ server.tool(
   },
   async ({ subject, type, due_date, due_time, deal_id, person_id, user_id, note }) => {
     const body = { subject, type, due_date };
-    if (due_time) body.due_time = due_time;
+    if (due_time) body.due_time = localToUtc(due_time, due_date); // converte Brasília → UTC
     if (deal_id) body.deal_id = deal_id;
     if (person_id) body.person_id = person_id;
     if (user_id) body.user_id = user_id;
@@ -944,7 +1053,8 @@ server.tool(
     if (subject) body.subject = subject;
     if (type) body.type = type;
     if (due_date) body.due_date = due_date;
-    if (due_time) body.due_time = due_time;
+    // converte Brasília → UTC; se vier due_time sem due_date, usa hoje como referência
+    if (due_time) body.due_time = localToUtc(due_time, due_date || new Date().toISOString().slice(0, 10));
     if (user_id) body.user_id = user_id;
     if (note) body.note = note;
     await pipedriveRequest(`/activities/${activity_id}`, {
