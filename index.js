@@ -11,6 +11,10 @@ let DEAL_CUSTOM_FIELDS = {};
 let KEY_TO_NAME = {};
 let KEY_TO_OPTIONS = {};
 
+// Cache de etapas e pipelines — carregado na inicialização e atualizado pelo sync_fields
+let STAGE_MAP = {};    // { id: "Nome da Etapa" }
+let PIPELINE_MAP = {}; // { id: "Nome do Pipeline" }
+
 function rebuildReverseMaps() {
   KEY_TO_NAME = {};
   KEY_TO_OPTIONS = {};
@@ -23,6 +27,17 @@ function rebuildReverseMaps() {
       }
       KEY_TO_OPTIONS[field.key] = idToLabel;
     }
+  }
+}
+
+async function loadStagePipelineCache() {
+  try {
+    const pipData = await pipedriveRequest("/pipelines");
+    for (const p of pipData.data || []) PIPELINE_MAP[p.id] = p.name;
+    const stData = await pipedriveRequest("/stages");
+    for (const s of stData.data || []) STAGE_MAP[s.id] = s.name;
+  } catch (err) {
+    console.error("[pipedrive-mcp] Aviso: não foi possível carregar cache de etapas/pipelines:", err.message);
   }
 }
 
@@ -214,11 +229,14 @@ function translateDealFields(deal) {
     valor: deal.value,
     moeda: deal.currency,
     status: deal.status,
-    etapa_id: deal.stage_id,
-    pipeline_id: deal.pipeline_id,
+    etapa: STAGE_MAP[deal.stage_id] || deal.stage_id,
+    pipeline: PIPELINE_MAP[deal.pipeline_id] || deal.pipeline_id,
     contato: deal.person_name,
+    contato_id: deal.person_id,
     empresa: deal.org_name,
+    empresa_id: deal.org_id,
     responsavel: deal.owner_name,
+    responsavel_id: deal.user_id,
     criado_em: deal.add_time,
     atualizado_em: deal.update_time,
   };
@@ -241,7 +259,7 @@ function translateDealFields(deal) {
 
 const server = new McpServer({
   name: "pipedrive-mcp",
-  version: "5.3.0",
+  version: "5.4.2",
 });
 
 // ─── NEGÓCIOS ────────────────────────────────────────────────────────────────
@@ -265,8 +283,8 @@ server.tool(
       valor: d.value,
       moeda: d.currency,
       status: d.status,
-      etapa: d.stage_id,
-      pipeline: d.pipeline_id,
+      etapa: STAGE_MAP[d.stage_id] || d.stage_id,
+      pipeline: PIPELINE_MAP[d.pipeline_id] || d.pipeline_id,
       contato: d.person_name,
       empresa: d.org_name,
       responsavel: d.owner_name,
@@ -346,6 +364,8 @@ server.tool(
       titulo: i.item.title,
       valor: i.item.value,
       status: i.item.status,
+      etapa: STAGE_MAP[i.item.stage_id] || i.item.stage_id,
+      pipeline: PIPELINE_MAP[i.item.pipeline_id] || i.item.pipeline_id,
       contato: i.item.person?.name,
       empresa: i.item.organization?.name,
     }));
@@ -375,15 +395,17 @@ server.tool(
     org_id: z.number().optional().describe("ID da organização"),
     pipeline_id: z.number().optional().describe("ID do pipeline"),
     stage_id: z.number().optional().describe("ID da etapa"),
+    user_id: z.number().optional().describe("ID do responsável. Se omitido, atribui ao dono do token. Use list_users para ver IDs."),
     custom_fields: z.string().optional().describe('JSON com campos personalizados. Ex: {"Segmento": "Jurídico", "Origem da Oportunidade": "INDIC | Geral"}'),
   },
-  async ({ title, value, currency, person_id, org_id, pipeline_id, stage_id, custom_fields }) => {
-    const body = { title, currency };
+  async ({ title, value, currency, person_id, org_id, pipeline_id, stage_id, user_id, custom_fields }) => {
+    const body = { title, currency, visible_to: 3 }; // 3 = empresa inteira
     if (value !== undefined) body.value = value;
     if (person_id) body.person_id = person_id;
     if (org_id) body.org_id = org_id;
     if (pipeline_id) body.pipeline_id = pipeline_id;
     if (stage_id) body.stage_id = stage_id;
+    if (user_id) body.user_id = user_id;
     let warnings = [];
     if (custom_fields) {
       try {
@@ -399,7 +421,7 @@ server.tool(
       method: "POST",
       body: JSON.stringify(body),
     });
-    let msg = `Negócio criado! ID: ${data.data.id} — "${data.data.title}"`;
+    let msg = `Negócio criado! ID: ${data.data.id} — "${data.data.title}"\nhttps://expertintegrado.pipedrive.com/deal/${data.data.id}`;
     if (warnings.length > 0) msg += `\n\nAvisos:\n${warnings.join("\n")}`;
     return { content: [{ type: "text", text: msg }] };
   }
@@ -415,10 +437,11 @@ server.tool(
     stage_id: z.number().optional().describe("Nova etapa"),
     pipeline_id: z.number().optional().describe("Novo pipeline (mover entre pipelines)"),
     status: z.enum(["open", "won", "lost"]).optional().describe("Novo status"),
-    lost_reason: z.string().optional().describe("Motivo da perda (usado quando status=lost)"),
+    lost_reason: z.enum(["Parou de responder", "Fora do orçamento", "Adiou contratação", "Mudança de prioridade", "Contratou outra empresa", "Internalizou", "Não é o que buscava", "Ferramenta incompatível / Desqualificado"]).optional().describe("Motivo da perda (obrigatório quando status=lost). Use exatamente um dos 8 motivos padronizados."),
     lost_time: z.string().optional().describe("Data/hora da perda no formato 'YYYY-MM-DD HH:MM:SS'. Permite definir data retroativa de perda."),
+    user_id: z.number().optional().describe("Novo responsável do deal (ID do usuário). Use list_users para ver IDs."),
   },
-  async ({ deal_id, title, value, stage_id, pipeline_id, status, lost_reason, lost_time }) => {
+  async ({ deal_id, title, value, stage_id, pipeline_id, status, lost_reason, lost_time, user_id }) => {
     const body = {};
     if (title) body.title = title;
     if (value !== undefined) body.value = value;
@@ -427,11 +450,12 @@ server.tool(
     if (status) body.status = status;
     if (lost_reason) body.lost_reason = lost_reason;
     if (lost_time) body.lost_time = lost_time;
+    if (user_id) body.user_id = user_id;
     await pipedriveRequest(`/deals/${deal_id}`, {
       method: "PUT",
       body: JSON.stringify(body),
     });
-    return { content: [{ type: "text", text: `Negócio ${deal_id} atualizado com sucesso.` }] };
+    return { content: [{ type: "text", text: `Negócio ${deal_id} atualizado com sucesso.\nhttps://expertintegrado.pipedrive.com/deal/${deal_id}` }] };
   }
 );
 
@@ -529,8 +553,8 @@ server.tool(
           const change = {
             tipo: "etapa",
             timestamp: ts,
-            de_id: d.old_value,
-            para_id: d.new_value,
+            de: STAGE_MAP[d.old_value] || d.old_value,
+            para: STAGE_MAP[d.new_value] || d.new_value,
           };
           stageChanges.push(change);
           allChanges.push(change);
@@ -596,6 +620,12 @@ server.tool(
     org_id: z.number().optional().describe("ID da organização relacionada"),
   },
   async ({ content, deal_id, person_id, org_id }) => {
+    if (!content || content.trim() === "") {
+      return { content: [{ type: "text", text: "Erro: o campo 'content' é obrigatório para criar uma nota." }] };
+    }
+    if (!deal_id && !person_id && !org_id) {
+      return { content: [{ type: "text", text: "Erro: informe pelo menos um vínculo — deal_id, person_id ou org_id." }] };
+    }
     const body = { content };
     if (deal_id) body.deal_id = deal_id;
     if (person_id) body.person_id = person_id;
@@ -604,7 +634,34 @@ server.tool(
       method: "POST",
       body: JSON.stringify(body),
     });
-    return { content: [{ type: "text", text: `Nota criada! ID: ${data.data.id}` }] };
+    const dealLink = deal_id ? `\nhttps://expertintegrado.pipedrive.com/deal/${deal_id}` : "";
+    return { content: [{ type: "text", text: `Nota criada! ID: ${data.data.id}${dealLink}` }] };
+  }
+);
+
+server.tool(
+  "update_note",
+  "Edita o conteúdo de uma nota existente e/ou pina/despina no deal. O conteúdo suporta HTML.",
+  {
+    note_id: z.number().describe("ID da nota a editar"),
+    content: z.string().optional().describe("Novo conteúdo da nota (suporta HTML)"),
+    pinned: z.boolean().optional().describe("true = pinar nota no deal, false = despinar"),
+  },
+  async ({ note_id, content, pinned }) => {
+    if (content === undefined && pinned === undefined) {
+      return { content: [{ type: "text", text: "Erro: informe ao menos 'content' ou 'pinned' para atualizar a nota." }] };
+    }
+    const body = {};
+    if (content !== undefined) body.content = content;
+    if (pinned !== undefined) body.pinned_to_deal_flag = pinned ? 1 : 0;
+    await pipedriveRequest(`/notes/${note_id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+    const actions = [];
+    if (content !== undefined) actions.push("conteúdo atualizado");
+    if (pinned !== undefined) actions.push(pinned ? "pinada no deal" : "desafixada do deal");
+    return { content: [{ type: "text", text: `Nota ${note_id} ${actions.join(" e ")}.` }] };
   }
 );
 
@@ -722,7 +779,7 @@ server.tool(
       method: "POST",
       body: JSON.stringify(body),
     });
-    return { content: [{ type: "text", text: `Contato criado! ID: ${data.data.id} — "${data.data.name}"` }] };
+    return { content: [{ type: "text", text: `Contato criado! ID: ${data.data.id} — "${data.data.name}"\nhttps://expertintegrado.pipedrive.com/person/${data.data.id}` }] };
   }
 );
 
@@ -831,11 +888,27 @@ server.tool(
       method: "POST",
       body: JSON.stringify(body),
     });
-    return { content: [{ type: "text", text: `Organização criada! ID: ${data.data.id} — "${data.data.name}"` }] };
+    return { content: [{ type: "text", text: `Organização criada! ID: ${data.data.id} — "${data.data.name}"\nhttps://expertintegrado.pipedrive.com/organization/${data.data.id}` }] };
   }
 );
 
 // ─── ATIVIDADES ───────────────────────────────────────────────────────────────
+
+// Mapa de key da API → nome amigável (conforme CLAUDE.md)
+const ACTIVITY_TYPE_NAMES = {
+  whatsapp: "WhatsApp",
+  call: "Chamada",
+  instagram: "Instagram",
+  linkedin: "Linkedin",
+  email: "E-mail",
+  task: "Tarefa",
+  encontro_presencial: "Encontro presencial",
+  diagnostico: "Demonstração",
+  apresentacao: "Reunião Geral",
+  meeting: "NO-SHOW",
+  deadline: "Prazo",
+  recurso_de_ia: "Recurso de IA",
+};
 
 server.tool(
   "list_activities",
@@ -845,7 +918,7 @@ server.tool(
     limit: z.number().optional().default(100).describe("Quantidade máxima de resultados por página (máx 500). Ignorado quando start_date/end_date são fornecidos (busca todas as páginas)."),
     start: z.number().optional().default(0).describe("Offset para paginação"),
     user_id: z.number().optional().describe("Filtrar por usuário (ID). Use list_users para ver IDs disponíveis."),
-    type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline"]).optional().describe("Filtrar por tipo de atividade"),
+    type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline", "recurso_de_ia"]).optional().describe("Filtrar por tipo de atividade"),
     start_date: z.string().optional().describe("Data inicial do filtro por due_date (YYYY-MM-DD). Filtra no lado do cliente após buscar todas as páginas."),
     end_date: z.string().optional().describe("Data final do filtro por due_date (YYYY-MM-DD). Filtra no lado do cliente após buscar todas as páginas."),
     deal_id: z.number().optional().describe("Filtrar por negócio (ID)"),
@@ -885,7 +958,7 @@ server.tool(
 
       const activities = filtered.map((a) => ({
         id: a.id,
-        tipo: a.type,
+        tipo: ACTIVITY_TYPE_NAMES[a.type] || a.type,
         assunto: a.subject,
         data: a.due_date,
         hora: utcToLocal(a.due_time, a.due_date), // converte UTC → Brasília para exibição
@@ -919,7 +992,7 @@ server.tool(
     const data = await pipedriveRequest(path);
     const activities = (data.data || []).map((a) => ({
       id: a.id,
-      tipo: a.type,
+      tipo: ACTIVITY_TYPE_NAMES[a.type] || a.type,
       assunto: a.subject,
       data: a.due_date,
       hora: utcToLocal(a.due_time, a.due_date), // converte UTC → Brasília para exibição
@@ -961,7 +1034,7 @@ server.tool(
     const today = new Date().toISOString().split("T")[0];
     const activities = (data.data || []).map((a) => ({
       id: a.id,
-      tipo: a.type,
+      tipo: ACTIVITY_TYPE_NAMES[a.type] || a.type,
       assunto: a.subject,
       data: a.due_date,
       hora: utcToLocal(a.due_time, a.due_date), // converte UTC → Brasília para exibição
@@ -998,7 +1071,7 @@ server.tool(
     const data = await pipedriveRequest("/activityTypes");
     const types = (data.data || []).map((t) => ({
       key: t.key_string,
-      nome: t.name,
+      nome: ACTIVITY_TYPE_NAMES[t.key_string] || t.name,
       personalizado: !!t.is_custom_flag,
       ativo: !!t.active_flag,
     }));
@@ -1008,13 +1081,13 @@ server.tool(
 
 server.tool(
   "create_activity",
-  "Cria uma nova atividade/tarefa no Pipedrive. Tipos: whatsapp, call (Chamada), instagram, linkedin, email, task (Tarefa), encontro_presencial, diagnostico (Reunião inicial), apresentacao (Reunião de Apresentação), meeting (NO-SHOW), deadline (Prazo).",
+  "Cria uma nova atividade/tarefa no Pipedrive. Tipos: whatsapp, call (Chamada), instagram, linkedin, email, task (Tarefa), encontro_presencial, diagnostico (Demonstração), apresentacao (Reunião Geral), meeting (NO-SHOW), deadline (Prazo), recurso_de_ia (Recurso de IA).",
   {
     subject: z.string().describe("Assunto da atividade"),
-    type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline"]).describe("Tipo da atividade"),
-    due_date: z.string().describe("Data de vencimento (YYYY-MM-DD)"),
+    type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline", "recurso_de_ia"]).describe("Tipo da atividade"),
+    due_date: z.string().optional().describe("Data de vencimento (YYYY-MM-DD). Opcional para tarefas sem prazo definido."),
     due_time: z.string().optional().describe("Hora de vencimento (HH:MM)"),
-    deal_id: z.number().optional().describe("ID do negócio relacionado"),
+    deal_id: z.number().optional().describe("ID do negócio relacionado. SEMPRE informar quando a atividade pertence a um deal — sem isso a atividade fica órfã e não aparece no card do Pipedrive."),
     person_id: z.number().optional().describe("ID do contato relacionado"),
     user_id: z.number().optional().describe("ID do usuário responsável (use list_users para ver IDs)"),
     note: z.string().optional().describe("Nota/observação"),
@@ -1025,12 +1098,13 @@ server.tool(
     if (deal_id) body.deal_id = deal_id;
     if (person_id) body.person_id = person_id;
     if (user_id) body.user_id = user_id;
-    if (note) body.note = note;
+    if (note) body.note = note.replace(/\n/g, "<br>"); // API ignora \n, aceita HTML <br>
     const data = await pipedriveRequest("/activities", {
       method: "POST",
       body: JSON.stringify(body),
     });
-    return { content: [{ type: "text", text: `Atividade criada! ID: ${data.data.id} — "${data.data.subject}"` }] };
+    const dealLink = data.data.deal_id ? `\nhttps://expertintegrado.pipedrive.com/deal/${data.data.deal_id}` : "";
+    return { content: [{ type: "text", text: `Atividade criada! ID: ${data.data.id} — "${data.data.subject}"${dealLink}` }] };
   }
 );
 
@@ -1041,13 +1115,14 @@ server.tool(
     activity_id: z.number().describe("ID da atividade"),
     done: z.boolean().optional().describe("Marcar como concluída (true) ou pendente (false)"),
     subject: z.string().optional().describe("Novo assunto"),
-    type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline"]).optional().describe("Novo tipo"),
+    type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline", "recurso_de_ia"]).optional().describe("Novo tipo"),
     due_date: z.string().optional().describe("Nova data (YYYY-MM-DD)"),
     due_time: z.string().optional().describe("Nova hora (HH:MM)"),
     user_id: z.number().optional().describe("Novo responsável (ID do usuário)"),
+    deal_id: z.number().optional().describe("Vincular a um negócio (deal_id)"),
     note: z.string().optional().describe("Nova nota/observação"),
   },
-  async ({ activity_id, done, subject, type, due_date, due_time, user_id, note }) => {
+  async ({ activity_id, done, subject, type, due_date, due_time, user_id, deal_id, note }) => {
     const body = {};
     if (done !== undefined) body.done = done ? 1 : 0;
     if (subject) body.subject = subject;
@@ -1056,7 +1131,8 @@ server.tool(
     // converte Brasília → UTC; se vier due_time sem due_date, usa hoje como referência
     if (due_time) body.due_time = localToUtc(due_time, due_date || new Date().toISOString().slice(0, 10));
     if (user_id) body.user_id = user_id;
-    if (note) body.note = note;
+    if (deal_id) body.deal_id = deal_id;
+    if (note) body.note = note.replace(/\n/g, "<br>"); // API ignora \n, aceita HTML <br>
     await pipedriveRequest(`/activities/${activity_id}`, {
       method: "PUT",
       body: JSON.stringify(body),
@@ -1230,7 +1306,7 @@ server.tool(
     const conflicts = [];
     for (const [key, value] of Object.entries(body)) {
       const current = dealData[key];
-      const isEmpty = current === null || current === undefined || current === "" || current === 0;
+      const isEmpty = current === null || current === undefined || current === "";
       if (isEmpty || force) {
         safeBody[key] = value;
       } else {
@@ -1263,9 +1339,9 @@ server.tool(
         body: JSON.stringify(safeBody),
       });
     }
-    let msg = `Negócio ${deal_id} atualizado! Campos alterados: ${Object.keys(parsed).join(", ")}`;
+    let msg = `Negócio ${deal_id} atualizado! Campos alterados: ${Object.keys(parsed).join(", ")}\nhttps://expertintegrado.pipedrive.com/deal/${deal_id}`;
     if (force && conflicts.length > 0) {
-      msg += ` (${conflicts.length} campo(s) sobrescrito(s) com confirmação do usuário)`;
+      msg += `\n(${conflicts.length} campo(s) sobrescrito(s) com confirmação do usuário: ${conflicts.map((c) => `"${c.field}"`).join(", ")})`;
     }
     if (errors.length > 0) msg += `\n\nAvisos:\n${errors.join("\n")}`;
     return { content: [{ type: "text", text: msg }] };
@@ -1436,6 +1512,7 @@ server.tool(
       // 5. Atualizar memória imediatamente (sem reiniciar)
       DEAL_CUSTOM_FIELDS = mapping;
       rebuildReverseMaps();
+      await loadStagePipelineCache();
 
       // 6. Retornar resumo
       const summary = [
@@ -1462,6 +1539,9 @@ server.tool(
 );
 
 // ─── START ────────────────────────────────────────────────────────────────────
+
+// Carregar cache de etapas/pipelines para tradução de IDs → nomes
+await loadStagePipelineCache();
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
