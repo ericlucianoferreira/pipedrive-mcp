@@ -2,3 +2,4 @@ node_modules/
 .env
 fields.js
 fields_raw.json
+fields_parsed.json
