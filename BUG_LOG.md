@@ -302,9 +302,9 @@ Ao criar organizacao, o MCP nao verificava se ja existia empresa com nome simila
 ## Bug #32 — `create_activity` sem verificacao de atividades duplicadas
 **Status:** Corrigido — v5.6.0
 
-Ao criar atividade vinculada a deal ou pessoa, o MCP nao verificava se ja existia atividade pendente do mesmo tipo na mesma data. Resultado: atividades duplicadas.
+Ao criar atividade vinculada a deal ou pessoa, o MCP nao verificava se ja existia qualquer atividade pendente. Resultado: atividades duplicadas e acumulo de atividades em aberto (o padrao e ter apenas uma atividade pendente por vez).
 
-**Correcao:** Guardrail no handler `create_activity`: se `deal_id` ou `person_id` informado, busca atividades pendentes e filtra por mesmo tipo + mesma data. Se encontrar similar, retorna aviso. Parametro `force: true` permite criar apos confirmacao explicita.
+**Correcao:** Guardrail no handler `create_activity`: se `deal_id` ou `person_id` informado, busca QUALQUER atividade pendente (done=0) vinculada. Se encontrar, retorna aviso com lista completa. Parametro `force: true` permite criar apos confirmacao explicita.
 
 ---
 

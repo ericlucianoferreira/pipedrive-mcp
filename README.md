@@ -230,7 +230,7 @@ Regras de protecao embutidas no MCP (nao dependem de configuracao do usuario):
 | `create_person` | Busca por ultimos 8 digitos do telefone + email | Se encontrar match, retorna aviso com link. Parametro `force: true` para criar mesmo assim. |
 | `create_deal` | Busca deals abertos para o `person_id` | Se encontrar deal aberto, retorna aviso com link. Parametro `force: true` para criar mesmo assim. |
 | `create_organization` | Busca organizacoes por nome | Se encontrar nome similar, retorna aviso com link. Parametro `force: true` para criar mesmo assim. |
-| `create_activity` | Busca atividades pendentes do mesmo tipo + mesma data | Se encontrar similar vinculada ao deal/pessoa, retorna aviso. Parametro `force: true` para criar mesmo assim. |
+| `create_activity` | Busca QUALQUER atividade pendente do deal/pessoa | Se encontrar atividade em aberto, retorna aviso com lista. Parametro `force: true` para criar mesmo assim. |
 | `update_person` | Verifica se nome/org ja tem valor preenchido | Se houver conflito, retorna aviso antes de sobrescrever. Parametro `force: true` para confirmar. |
 | `update_deal_fields` | Verifica se campos customizados ja tem valor | Se houver conflito, retorna lista de conflitos. Parametro `force: true` para sobrescrever. |
 

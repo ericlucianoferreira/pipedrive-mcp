@@ -1309,7 +1309,7 @@ server.tool(
 
 server.tool(
   "create_activity",
-  "Cria uma nova atividade/tarefa no Pipedrive. Aceita key da API, nome ou alias como tipo. Use list_activity_types para ver tipos disponíveis. IMPORTANTE: Se deal_id ou person_id for informado, o MCP verifica se já existe atividade pendente do mesmo tipo na mesma data antes de criar.",
+  "Cria uma nova atividade/tarefa no Pipedrive. Aceita key da API, nome ou alias como tipo. Use list_activity_types para ver tipos disponíveis. IMPORTANTE: Se deal_id ou person_id for informado, o MCP verifica se já existe QUALQUER atividade pendente antes de criar.",
   {
     subject: z.string().describe("Assunto da atividade"),
     type: z.string().describe("Tipo da atividade. Aceita key da API, nome ou alias. Use list_activity_types para referência."),
@@ -1320,45 +1320,37 @@ server.tool(
     person_id: z.number().optional().describe("ID do contato relacionado"),
     user_id: z.number().optional().describe("ID do usuário responsável (use list_users para ver IDs)"),
     note: z.string().optional().describe("Nota/observação"),
-    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar atividade similar pendente. Use SOMENTE após confirmação explícita do usuário."),
+    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar atividade pendente. Use SOMENTE após confirmação explícita do usuário."),
   },
   async ({ subject, type, due_date, due_time, duration, deal_id, person_id, user_id, note, force }) => {
     await ensureActivityTypesLoaded();
     const resolvedType = resolveActivityType(type);
 
-    // ── Guardrail: buscar atividades pendentes similares ──
+    // ── Guardrail: buscar QUALQUER atividade pendente vinculada ao deal/pessoa ──
     if (!force && (deal_id || person_id)) {
       try {
-        let existingActivities = [];
+        let pendingActivities = [];
 
         if (deal_id) {
-          // Buscar atividades pendentes do deal
           const dealActs = await pipedriveRequest(`/deals/${deal_id}/activities?done=0&limit=100`);
-          existingActivities = dealActs.data || [];
+          pendingActivities = dealActs.data || [];
         } else if (person_id) {
-          // Buscar atividades pendentes gerais e filtrar por person_id
           const personActs = await pipedriveRequest(`/activities?done=0&limit=100`);
-          existingActivities = (personActs.data || []).filter((a) => a.person_id === person_id);
+          pendingActivities = (personActs.data || []).filter((a) => a.person_id === person_id);
         }
 
-        // Filtrar: mesmo tipo E mesma data (se data informada)
-        const similares = existingActivities.filter((a) => {
-          const sameType = a.type === resolvedType;
-          const sameDate = due_date ? a.due_date === due_date : true; // sem data = verifica só tipo
-          return sameType && sameDate;
-        });
-
-        if (similares.length > 0) {
-          const typeName = ACTIVITY_TYPES[resolvedType]?.name || resolvedType;
-          const lines = similares.map((a) => {
+        if (pendingActivities.length > 0) {
+          const lines = pendingActivities.map((a) => {
+            const typeName = ACTIVITY_TYPES[a.type]?.name || a.type;
             const time = a.due_time ? ` às ${utcToLocal(a.due_time, a.due_date)}` : "";
             const dealInfo = a.deal_id ? `\n  Deal: https://${COMPANY_DOMAIN}.pipedrive.com/deal/${a.deal_id}` : "";
-            return `- "${a.subject}" (ID: ${a.id}) | Data: ${a.due_date || "sem data"}${time} | Done: ${a.done ? "Sim" : "Não"}${dealInfo}`;
+            return `- "${a.subject}" (ID: ${a.id}) | Tipo: ${typeName} | Data: ${a.due_date || "sem data"}${time}${dealInfo}`;
           });
+          const context = deal_id ? "este deal" : "este contato";
           return {
             content: [{
               type: "text",
-              text: `⚠ ATIVIDADE SIMILAR PENDENTE — já existe ${similares.length} atividade(s) do tipo "${typeName}"${due_date ? ` no dia ${due_date}` : ""}:\n\n${lines.join("\n\n")}\n\nSe realmente deseja criar uma NOVA atividade, chame create_activity novamente com force: true.`,
+              text: `⚠ ATIVIDADE PENDENTE EXISTENTE — ${context} já tem ${pendingActivities.length} atividade(s) em aberto:\n\n${lines.join("\n\n")}\n\nSe realmente deseja criar uma NOVA atividade, chame create_activity novamente com force: true.`,
             }],
           };
         }
