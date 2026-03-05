@@ -263,5 +263,50 @@ Mesmo bug do #6 (deals), mas para contatos e organizacoes. Registros criados fic
 
 ---
 
+## Bug #28 — `create_person` sem verificacao de duplicatas
+**Status:** Corrigido — v5.6.0
+
+Ao pedir para cadastrar alguem, o MCP criava direto sem verificar se a pessoa ja existia. Resultado: contatos duplicados no CRM.
+
+**Correcao:** Guardrail no handler `create_person`: antes de criar, busca por ultimos 8 digitos do telefone (ignorando DDD e 9o digito WhatsApp) e/ou email via `/persons/search`. Se encontrar match, retorna aviso com link em vez de criar. Parametro `force: true` permite criar apos confirmacao explicita.
+
+---
+
+## Bug #29 — `create_deal` sem verificacao de deals abertos existentes
+**Status:** Corrigido — v5.6.0
+
+Ao criar deal para um contato, o MCP nao verificava se ja existia deal aberto vinculado aquela pessoa. Resultado: deals duplicados para o mesmo prospect.
+
+**Correcao:** Guardrail no handler `create_deal`: se `person_id` informado, busca deals abertos via `/persons/{id}/deals?status=open`. Se encontrar, retorna aviso com links dos deals existentes. Parametro `force: true` permite criar apos confirmacao explicita.
+
+---
+
+## Bug #30 — `update_person` sobrescreve campos sem avisar
+**Status:** Corrigido — v5.6.0
+
+Ao atualizar contato, campos como nome e organizacao eram sobrescritos sem aviso previo. Emails e telefones ja eram adicionados (nao substituidos), mas nome e org eram silenciosamente substituidos.
+
+**Correcao:** Guardrail no handler `update_person`: antes de atualizar, verifica se campos (nome, org) ja tem valor preenchido. Se houver conflito, retorna aviso com valores atuais vs novos. Parametro `force: true` permite sobrescrever apos confirmacao explicita. Emails e telefones continuam sendo adicionados (nunca substituidos).
+
+---
+
+## Bug #31 — `create_organization` sem verificacao de duplicatas
+**Status:** Corrigido — v5.6.0
+
+Ao criar organizacao, o MCP nao verificava se ja existia empresa com nome similar. Resultado: organizacoes duplicadas no CRM.
+
+**Correcao:** Guardrail no handler `create_organization`: antes de criar, busca por nome via `/organizations/search`. Se encontrar match, retorna aviso com link. Parametro `force: true` permite criar apos confirmacao explicita.
+
+---
+
+## Bug #32 — `create_activity` sem verificacao de atividades duplicadas
+**Status:** Corrigido — v5.6.0
+
+Ao criar atividade vinculada a deal ou pessoa, o MCP nao verificava se ja existia atividade pendente do mesmo tipo na mesma data. Resultado: atividades duplicadas.
+
+**Correcao:** Guardrail no handler `create_activity`: se `deal_id` ou `person_id` informado, busca atividades pendentes e filtra por mesmo tipo + mesma data. Se encontrar similar, retorna aviso. Parametro `force: true` permite criar apos confirmacao explicita.
+
+---
+
 ## Proximos passos
 - [ ] Documentar regra: verificar `deal_id` antes de reutilizar atividade

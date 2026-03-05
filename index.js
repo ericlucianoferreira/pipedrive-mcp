@@ -469,7 +469,7 @@ server.tool(
 
 server.tool(
   "create_deal",
-  "Cria um novo negócio no Pipedrive. Aceita campos personalizados via custom_fields.",
+  "Cria um novo negócio no Pipedrive. Aceita campos personalizados via custom_fields. IMPORTANTE: Se person_id for informado, o MCP busca automaticamente se já existe deal aberto para esse contato. Se encontrar, retorna aviso com link em vez de criar.",
   {
     title: z.string().describe("Título do negócio"),
     value: z.number().optional().describe("Valor do negócio"),
@@ -480,8 +480,38 @@ server.tool(
     stage_id: z.number().optional().describe("ID da etapa"),
     user_id: z.number().optional().describe("ID do responsável. Se omitido, atribui ao dono do token. Use list_users para ver IDs."),
     custom_fields: z.string().optional().describe('JSON com campos personalizados. Ex: {"Segmento": "Jurídico", "Origem da Oportunidade": "INDIC | Geral"}'),
+    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se existir deal aberto para o contato. Use SOMENTE após confirmação explícita do usuário."),
   },
-  async ({ title, value, currency, person_id, org_id, pipeline_id, stage_id, user_id, custom_fields }) => {
+  async ({ title, value, currency, person_id, org_id, pipeline_id, stage_id, user_id, custom_fields, force }) => {
+    // ── Guardrail: verificar deals abertos para o contato ──
+    if (person_id && !force) {
+      try {
+        const personDeals = await pipedriveRequest(`/persons/${person_id}/deals?status=open&limit=100`);
+        const openDeals = (personDeals.data || []).map((d) => ({
+          id: d.id,
+          titulo: d.title,
+          valor: d.value,
+          moeda: d.currency,
+          etapa: STAGE_MAP[d.stage_id] || d.stage_id,
+          pipeline: PIPELINE_MAP[d.pipeline_id] || d.pipeline_id,
+          responsavel: d.owner_name,
+        }));
+        if (openDeals.length > 0) {
+          const lines = openDeals.map((d) => {
+            const valor = d.valor ? ` | Valor: R$${d.valor.toLocaleString("pt-BR")}` : "";
+            return `- "${d.titulo}" (ID: ${d.id}) | Etapa: ${d.etapa} | Pipeline: ${d.pipeline}${valor} | Resp: ${d.responsavel}\n  https://${COMPANY_DOMAIN}.pipedrive.com/deal/${d.id}`;
+          });
+          return {
+            content: [{
+              type: "text",
+              text: `⚠ DEAL ABERTO EXISTENTE — este contato já tem ${openDeals.length} negócio(s) aberto(s):\n\n${lines.join("\n\n")}\n\nSe realmente deseja criar um NOVO deal, chame create_deal novamente com force: true.`,
+            }],
+          };
+        }
+      } catch { /* ignora erro — continua com criação */ }
+    }
+
+    // ── Criar deal ──
     const body = { title, currency, visible_to: 3 }; // 3 = empresa inteira
     if (value !== undefined) body.value = value;
     if (person_id) body.person_id = person_id;
@@ -846,14 +876,73 @@ server.tool(
 
 server.tool(
   "create_person",
-  "Cria um novo contato no Pipedrive.",
+  "Cria um novo contato no Pipedrive. IMPORTANTE: Antes de criar, o MCP busca automaticamente por duplicatas (últimos 8 dígitos do telefone e/ou email). Se encontrar, retorna aviso com link em vez de criar.",
   {
     name: z.string().describe("Nome do contato"),
     email: z.string().optional().describe("E-mail do contato"),
     phone: z.string().optional().describe("Telefone do contato"),
     org_id: z.number().optional().describe("ID da organização"),
+    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar duplicata. Use SOMENTE após confirmação explícita do usuário."),
   },
-  async ({ name, email, phone, org_id }) => {
+  async ({ name, email, phone, org_id, force }) => {
+    // ── Guardrail: buscar duplicatas antes de criar ──
+    if (!force) {
+      const duplicates = [];
+
+      // Busca por telefone (últimos 8 dígitos — ignora DDD e 9º dígito WhatsApp)
+      if (phone) {
+        const digitsOnly = phone.replace(/\D/g, "");
+        const last8 = digitsOnly.slice(-8);
+        if (last8.length === 8) {
+          try {
+            const phoneSearch = await pipedriveRequest(`/persons/search?term=${encodeURIComponent(last8)}&limit=5&fields=phone`);
+            const phoneMatches = (phoneSearch.data?.items || []).map((i) => ({
+              id: i.item.id,
+              nome: i.item.name,
+              telefones: i.item.phones || [],
+              emails: i.item.emails || [],
+              empresa: i.item.organization?.name || null,
+            }));
+            for (const m of phoneMatches) {
+              if (!duplicates.some((d) => d.id === m.id)) duplicates.push(m);
+            }
+          } catch { /* ignora erro de busca */ }
+        }
+      }
+
+      // Busca por email
+      if (email) {
+        try {
+          const emailSearch = await pipedriveRequest(`/persons/search?term=${encodeURIComponent(email)}&limit=5&fields=email`);
+          const emailMatches = (emailSearch.data?.items || []).map((i) => ({
+            id: i.item.id,
+            nome: i.item.name,
+            telefones: i.item.phones || [],
+            emails: i.item.emails || [],
+            empresa: i.item.organization?.name || null,
+          }));
+          for (const m of emailMatches) {
+            if (!duplicates.some((d) => d.id === m.id)) duplicates.push(m);
+          }
+        } catch { /* ignora erro de busca */ }
+      }
+
+      if (duplicates.length > 0) {
+        const lines = duplicates.map((d) => {
+          const phones = d.telefones.map((p) => p.value || p).join(", ") || "sem telefone";
+          const emails = d.emails.map((e) => e.value || e).join(", ") || "sem email";
+          return `- ${d.nome} (ID: ${d.id}) | Tel: ${phones} | Email: ${emails} | Empresa: ${d.empresa || "N/A"}\n  https://${COMPANY_DOMAIN}.pipedrive.com/person/${d.id}`;
+        });
+        return {
+          content: [{
+            type: "text",
+            text: `⚠ POSSÍVEL DUPLICATA — encontrei ${duplicates.length} contato(s) similar(es):\n\n${lines.join("\n\n")}\n\nSe realmente deseja criar um NOVO contato, chame create_person novamente com force: true.`,
+          }],
+        };
+      }
+    }
+
+    // ── Criar contato ──
     const body = { name, visible_to: 3 }; // 3 = empresa inteira
     if (email) body.email = [{ value: email, primary: true }];
     if (phone) body.phone = [{ value: phone, primary: true }];
@@ -868,46 +957,81 @@ server.tool(
 
 server.tool(
   "update_person",
-  "Atualiza um contato (nome, email, telefone, organização).",
+  "Atualiza um contato (nome, email, telefone, organização). IMPORTANTE: Antes de atualizar, verifica campos existentes e avisa sobre possíveis sobrescritas. Email e telefone são ADICIONADOS (não substituem os existentes).",
   {
     person_id: z.number().describe("ID do contato"),
     name: z.string().optional().describe("Novo nome"),
     email: z.string().optional().describe("Novo e-mail"),
     phone: z.string().optional().describe("Novo telefone"),
     org_id: z.number().optional().describe("ID da nova organização"),
+    force: z.boolean().optional().default(false).describe("Se true, aplica alterações mesmo em campos que já têm valor. Use SOMENTE após confirmação explícita do usuário."),
   },
-  async ({ person_id, name, email, phone, org_id }) => {
+  async ({ person_id, name, email, phone, org_id, force }) => {
+    // ── Guardrail: buscar dados atuais e avisar sobre sobrescritas ──
+    const current = await pipedriveRequest(`/persons/${person_id}`);
+    const person = current.data;
+    const conflicts = [];
+
+    if (name && person.name && person.name !== name) {
+      conflicts.push(`Nome: "${person.name}" → "${name}"`);
+    }
+    if (org_id && person.org_id && person.org_id.value !== org_id) {
+      conflicts.push(`Organização: "${person.org_id.name || person.org_id.value}" → ID ${org_id}`);
+    }
+
+    if (conflicts.length > 0 && !force) {
+      return {
+        content: [{
+          type: "text",
+          text: `⚠ CAMPOS JÁ PREENCHIDOS no contato "${person.name}" (ID: ${person_id}):\n\n${conflicts.map((c) => `- ${c}`).join("\n")}\n\nhttps://${COMPANY_DOMAIN}.pipedrive.com/person/${person_id}\n\nSe realmente deseja sobrescrever, chame update_person novamente com force: true.`,
+        }],
+      };
+    }
+
     const body = {};
     if (name) body.name = name;
     if (org_id) body.org_id = org_id;
-    // Para email e phone: buscar dados atuais e ADICIONAR em vez de substituir
-    if (email || phone) {
-      const current = await pipedriveRequest(`/persons/${person_id}`);
-      const person = current.data;
-      if (email) {
-        const existingEmails = person.email || [];
-        const alreadyExists = existingEmails.some((e) => e.value === email);
-        if (alreadyExists) {
-          body.email = existingEmails;
-        } else {
-          body.email = [...existingEmails, { value: email, primary: existingEmails.length === 0 }];
-        }
-      }
-      if (phone) {
-        const existingPhones = person.phone || [];
-        const alreadyExists = existingPhones.some((p) => p.value === phone);
-        if (alreadyExists) {
-          body.phone = existingPhones;
-        } else {
-          body.phone = [...existingPhones, { value: phone, primary: existingPhones.length === 0 }];
-        }
+
+    // Para email e phone: ADICIONAR em vez de substituir
+    if (email) {
+      const existingEmails = person.email || [];
+      const alreadyExists = existingEmails.some((e) => e.value === email);
+      if (alreadyExists) {
+        // Email já existe — não precisa atualizar
+      } else {
+        body.email = [...existingEmails, { value: email, primary: existingEmails.length === 0 }];
       }
     }
+    if (phone) {
+      const existingPhones = person.phone || [];
+      const alreadyExists = existingPhones.some((p) => p.value === phone);
+      if (alreadyExists) {
+        // Telefone já existe — não precisa atualizar
+      } else {
+        body.phone = [...existingPhones, { value: phone, primary: existingPhones.length === 0 }];
+      }
+    }
+
+    // Se não há nada para atualizar
+    if (Object.keys(body).length === 0) {
+      const msgs = [];
+      if (email) msgs.push(`Email "${email}" já existe neste contato.`);
+      if (phone) msgs.push(`Telefone "${phone}" já existe neste contato.`);
+      if (msgs.length > 0) {
+        return { content: [{ type: "text", text: `Nenhuma alteração necessária. ${msgs.join(" ")}` }] };
+      }
+      return { content: [{ type: "text", text: "Nenhum campo para atualizar." }] };
+    }
+
     await pipedriveRequest(`/persons/${person_id}`, {
       method: "PUT",
       body: JSON.stringify(body),
     });
-    return { content: [{ type: "text", text: `Contato ${person_id} atualizado com sucesso.` }] };
+
+    let msg = `Contato ${person_id} atualizado com sucesso.\nhttps://${COMPANY_DOMAIN}.pipedrive.com/person/${person_id}`;
+    if (email && body.email) msg += `\nEmail "${email}" adicionado.`;
+    if (phone && body.phone) msg += `\nTelefone "${phone}" adicionado.`;
+    return { content: [{ type: "text", text: msg }] };
   }
 );
 
@@ -957,13 +1081,40 @@ server.tool(
 
 server.tool(
   "create_organization",
-  "Cria uma nova organização/empresa no Pipedrive.",
+  "Cria uma nova organização/empresa no Pipedrive. IMPORTANTE: Antes de criar, o MCP busca automaticamente por organizações com nome similar. Se encontrar, retorna aviso com link em vez de criar.",
   {
     name: z.string().describe("Nome da organização"),
     address: z.string().optional().describe("Endereço da organização"),
     owner_id: z.number().optional().describe("ID do usuário responsável"),
+    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar organização similar. Use SOMENTE após confirmação explícita do usuário."),
   },
-  async ({ name, address, owner_id }) => {
+  async ({ name, address, owner_id, force }) => {
+    // ── Guardrail: buscar organizações similares antes de criar ──
+    if (!force) {
+      try {
+        const orgSearch = await pipedriveRequest(`/organizations/search?term=${encodeURIComponent(name)}&limit=5`);
+        const matches = (orgSearch.data?.items || []).map((i) => ({
+          id: i.item.id,
+          nome: i.item.name,
+          endereco: i.item.address,
+          negocios_abertos: i.item.open_deals_count,
+        }));
+        if (matches.length > 0) {
+          const lines = matches.map((m) => {
+            const addr = m.endereco ? ` | End: ${m.endereco}` : "";
+            return `- "${m.nome}" (ID: ${m.id}) | Deals abertos: ${m.negocios_abertos || 0}${addr}\n  https://${COMPANY_DOMAIN}.pipedrive.com/organization/${m.id}`;
+          });
+          return {
+            content: [{
+              type: "text",
+              text: `⚠ ORGANIZAÇÃO SIMILAR ENCONTRADA — ${matches.length} resultado(s):\n\n${lines.join("\n\n")}\n\nSe realmente deseja criar uma NOVA organização, chame create_organization novamente com force: true.`,
+            }],
+          };
+        }
+      } catch { /* ignora erro de busca */ }
+    }
+
+    // ── Criar organização ──
     const body = { name, visible_to: 3 }; // 3 = empresa inteira
     if (address) body.address = address;
     if (owner_id) body.owner_id = owner_id;
@@ -1158,7 +1309,7 @@ server.tool(
 
 server.tool(
   "create_activity",
-  "Cria uma nova atividade/tarefa no Pipedrive. Aceita key da API, nome ou alias como tipo. Use list_activity_types para ver tipos disponíveis.",
+  "Cria uma nova atividade/tarefa no Pipedrive. Aceita key da API, nome ou alias como tipo. Use list_activity_types para ver tipos disponíveis. IMPORTANTE: Se deal_id ou person_id for informado, o MCP verifica se já existe atividade pendente do mesmo tipo na mesma data antes de criar.",
   {
     subject: z.string().describe("Assunto da atividade"),
     type: z.string().describe("Tipo da atividade. Aceita key da API, nome ou alias. Use list_activity_types para referência."),
@@ -1169,10 +1320,52 @@ server.tool(
     person_id: z.number().optional().describe("ID do contato relacionado"),
     user_id: z.number().optional().describe("ID do usuário responsável (use list_users para ver IDs)"),
     note: z.string().optional().describe("Nota/observação"),
+    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar atividade similar pendente. Use SOMENTE após confirmação explícita do usuário."),
   },
-  async ({ subject, type, due_date, due_time, duration, deal_id, person_id, user_id, note }) => {
+  async ({ subject, type, due_date, due_time, duration, deal_id, person_id, user_id, note, force }) => {
     await ensureActivityTypesLoaded();
     const resolvedType = resolveActivityType(type);
+
+    // ── Guardrail: buscar atividades pendentes similares ──
+    if (!force && (deal_id || person_id)) {
+      try {
+        let existingActivities = [];
+
+        if (deal_id) {
+          // Buscar atividades pendentes do deal
+          const dealActs = await pipedriveRequest(`/deals/${deal_id}/activities?done=0&limit=100`);
+          existingActivities = dealActs.data || [];
+        } else if (person_id) {
+          // Buscar atividades pendentes gerais e filtrar por person_id
+          const personActs = await pipedriveRequest(`/activities?done=0&limit=100`);
+          existingActivities = (personActs.data || []).filter((a) => a.person_id === person_id);
+        }
+
+        // Filtrar: mesmo tipo E mesma data (se data informada)
+        const similares = existingActivities.filter((a) => {
+          const sameType = a.type === resolvedType;
+          const sameDate = due_date ? a.due_date === due_date : true; // sem data = verifica só tipo
+          return sameType && sameDate;
+        });
+
+        if (similares.length > 0) {
+          const typeName = ACTIVITY_TYPES[resolvedType]?.name || resolvedType;
+          const lines = similares.map((a) => {
+            const time = a.due_time ? ` às ${utcToLocal(a.due_time, a.due_date)}` : "";
+            const dealInfo = a.deal_id ? `\n  Deal: https://${COMPANY_DOMAIN}.pipedrive.com/deal/${a.deal_id}` : "";
+            return `- "${a.subject}" (ID: ${a.id}) | Data: ${a.due_date || "sem data"}${time} | Done: ${a.done ? "Sim" : "Não"}${dealInfo}`;
+          });
+          return {
+            content: [{
+              type: "text",
+              text: `⚠ ATIVIDADE SIMILAR PENDENTE — já existe ${similares.length} atividade(s) do tipo "${typeName}"${due_date ? ` no dia ${due_date}` : ""}:\n\n${lines.join("\n\n")}\n\nSe realmente deseja criar uma NOVA atividade, chame create_activity novamente com force: true.`,
+            }],
+          };
+        }
+      } catch { /* ignora erro — continua com criação */ }
+    }
+
+    // ── Criar atividade ──
     const body = { subject, type: resolvedType, due_date };
     // Duração: explícita > default do config > nenhuma
     const dur = duration || ACTIVITY_TYPES[resolvedType]?.default_duration;

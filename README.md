@@ -221,6 +221,21 @@ O MCP cuida da parte **tecnica** (comunicacao com a API). Para que o agente AI s
 - Dominio da empresa e detectado automaticamente via API (sem hardcode)
 - Contatos e organizacoes criados com visibilidade para toda a empresa (`visible_to: 3`)
 
+### Guardrails anti-duplicata (v5.6.0)
+
+Regras de protecao embutidas no MCP (nao dependem de configuracao do usuario):
+
+| Operacao | Verificacao automatica | Comportamento |
+|----------|----------------------|---------------|
+| `create_person` | Busca por ultimos 8 digitos do telefone + email | Se encontrar match, retorna aviso com link. Parametro `force: true` para criar mesmo assim. |
+| `create_deal` | Busca deals abertos para o `person_id` | Se encontrar deal aberto, retorna aviso com link. Parametro `force: true` para criar mesmo assim. |
+| `create_organization` | Busca organizacoes por nome | Se encontrar nome similar, retorna aviso com link. Parametro `force: true` para criar mesmo assim. |
+| `create_activity` | Busca atividades pendentes do mesmo tipo + mesma data | Se encontrar similar vinculada ao deal/pessoa, retorna aviso. Parametro `force: true` para criar mesmo assim. |
+| `update_person` | Verifica se nome/org ja tem valor preenchido | Se houver conflito, retorna aviso antes de sobrescrever. Parametro `force: true` para confirmar. |
+| `update_deal_fields` | Verifica se campos customizados ja tem valor | Se houver conflito, retorna lista de conflitos. Parametro `force: true` para sobrescrever. |
+
+**Por que ultimos 8 digitos?** O padrao de busca por telefone usa apenas os 8 ultimos digitos para tolerar erros de DDD e o 9o digito adicionado em numeros WhatsApp brasileiros.
+
 ## Ferramentas disponiveis (34 tools)
 
 ### Configuracao
