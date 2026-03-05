@@ -342,7 +342,7 @@ function translateDealFields(deal) {
 
 const server = new McpServer({
   name: "pipedrive-mcp",
-  version: "5.4.2",
+  version: "5.6.0",
 });
 
 // ─── NEGÓCIOS ────────────────────────────────────────────────────────────────
@@ -1294,15 +1294,17 @@ server.tool(
   {},
   async () => {
     await ensureActivityTypesLoaded();
-    const data = await pipedriveRequest("/activityTypes");
-    const types = (data.data || []).map((t) => ({
-      key: t.key_string,
-      nome: ACTIVITY_TYPES[t.key_string]?.name || t.name,
-      aliases: ACTIVITY_TYPES[t.key_string]?.aliases || [],
-      duracao_padrao_min: ACTIVITY_TYPES[t.key_string]?.default_duration || null,
-      personalizado: !!t.is_custom_flag,
-      ativo: !!t.active_flag,
-    }));
+    // Usa dados em memória (ACTIVITY_TYPES) — evita chamada extra à API
+    const types = Object.entries(ACTIVITY_TYPES)
+      .filter(([_, t]) => t.active)
+      .map(([key, t]) => ({
+        key,
+        nome: t.name,
+        aliases: t.aliases || [],
+        duracao_padrao_min: t.default_duration || null,
+        personalizado: t.is_custom || false,
+        ativo: true,
+      }));
     return { content: [{ type: "text", text: JSON.stringify(types, null, 2) }] };
   }
 );
