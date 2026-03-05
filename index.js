@@ -5,6 +5,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 
 const FIELDS_PATH = fileURLToPath(new URL("./fields.js", import.meta.url));
+const ACTIVITY_TYPES_PATH = fileURLToPath(new URL("./activity_types.js", import.meta.url));
 
 // Store mutável — começa vazio, preenchido pelo sync_fields ou pelo arquivo existente
 let DEAL_CUSTOM_FIELDS = {};
@@ -14,6 +15,10 @@ let KEY_TO_OPTIONS = {};
 // Cache de etapas e pipelines — carregado na inicialização e atualizado pelo sync_fields
 let STAGE_MAP = {};    // { id: "Nome da Etapa" }
 let PIPELINE_MAP = {}; // { id: "Nome do Pipeline" }
+
+// Tipos de atividade — carregado de activity_types.js ou da API sob demanda
+let ACTIVITY_TYPES = {};   // { key_string: { name, aliases, default_duration, is_custom, active } }
+let TYPE_LOOKUP = {};      // { lowercase_input: key_string } — mapa de resolução
 
 function rebuildReverseMaps() {
   KEY_TO_NAME = {};
@@ -28,6 +33,68 @@ function rebuildReverseMaps() {
       KEY_TO_OPTIONS[field.key] = idToLabel;
     }
   }
+}
+
+function rebuildTypeLookup() {
+  TYPE_LOOKUP = {};
+  for (const [key, type] of Object.entries(ACTIVITY_TYPES)) {
+    if (!type.active) continue;
+    const register = (alias) => {
+      const normalized = alias.toLowerCase();
+      if (TYPE_LOOKUP[normalized] && TYPE_LOOKUP[normalized] !== key) {
+        console.error(`[pipedrive-mcp] Aviso: alias "${alias}" conflita entre tipos "${TYPE_LOOKUP[normalized]}" e "${key}". Usando "${key}".`);
+      }
+      TYPE_LOOKUP[normalized] = key;
+    };
+    register(key);
+    if (type.name) register(type.name);
+    for (const alias of (type.aliases || [])) register(alias);
+  }
+}
+
+function resolveActivityType(input) {
+  if (!input) return input;
+  const resolved = TYPE_LOOKUP[input.toLowerCase()];
+  if (resolved) return resolved;
+  // Fallback: se TYPE_LOOKUP vazio (sem config, sem API), passa direto
+  if (Object.keys(TYPE_LOOKUP).length === 0) return input;
+  const valid = Object.entries(ACTIVITY_TYPES)
+    .filter(([_, t]) => t.active)
+    .map(([key, t]) => `  - ${t.name} (${key})` + (t.aliases?.length ? ` [aliases: ${t.aliases.join(", ")}]` : ""))
+    .join("\n");
+  throw new Error(`Tipo de atividade "${input}" não encontrado.\n\nTipos válidos:\n${valid}`);
+}
+
+function minutesToHHMM(min) {
+  if (!min) return undefined;
+  const hh = String(Math.floor(min / 60)).padStart(2, "0");
+  const mm = String(min % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+let _activityTypesLoadingPromise = null;
+async function ensureActivityTypesLoaded() {
+  if (Object.keys(ACTIVITY_TYPES).length > 0) return;
+  if (_activityTypesLoadingPromise) return _activityTypesLoadingPromise;
+  _activityTypesLoadingPromise = (async () => {
+    try {
+      const data = await pipedriveRequest("/activityTypes");
+      for (const t of (data.data || [])) {
+        ACTIVITY_TYPES[t.key_string] = {
+          name: t.name,
+          aliases: [t.name.toLowerCase()],
+          default_duration: null,
+          is_custom: !!t.is_custom_flag,
+          active: !!t.active_flag,
+        };
+      }
+      rebuildTypeLookup();
+    } catch (err) {
+      console.error("[pipedrive-mcp] Aviso: não foi possível carregar tipos de atividade da API:", err.message);
+    }
+  })();
+  await _activityTypesLoadingPromise;
+  _activityTypesLoadingPromise = null;
 }
 
 async function loadStagePipelineCache() {
@@ -54,12 +121,28 @@ try {
   }
 }
 
+// Tenta carregar activity_types.js existente na inicialização
+try {
+  const mod2 = await import(new URL("./activity_types.js", import.meta.url).href);
+  ACTIVITY_TYPES = mod2.ACTIVITY_TYPES || {};
+  rebuildTypeLookup();
+} catch (err) {
+  if (err.code === "ERR_MODULE_NOT_FOUND" || err.message?.includes("Cannot find")) {
+    console.error("[pipedrive-mcp] activity_types.js não encontrado. Execute sync_activity_types para configurar tipos de atividade.");
+  } else {
+    console.error("[pipedrive-mcp] Erro ao carregar activity_types.js:", err.message);
+  }
+}
+
 const API_KEY = process.env.PIPEDRIVE_API_KEY;
 if (!API_KEY) {
   console.error("[pipedrive-mcp] ERRO: PIPEDRIVE_API_KEY não configurada. Defina a variável de ambiente antes de iniciar.");
   process.exit(1);
 }
 const BASE_URL = "https://api.pipedrive.com/v1";
+
+// Domínio da empresa — carregado via /users/me no startup
+let COMPANY_DOMAIN = "app"; // fallback genérico
 
 // ─── TIMEZONE ─────────────────────────────────────────────────────────────────
 // O Pipedrive armazena due_time em UTC. O usuário informa horários em
@@ -73,7 +156,7 @@ const USER_TIMEZONE = process.env.PIPEDRIVE_TIMEZONE || "America/Sao_Paulo";
 function localToUtc(timeStr, dateStr) {
   if (!timeStr || !dateStr) return timeStr;
   // Monta um Date no fuso do usuário e extrai o UTC equivalente
-  const localDt = new Date(`${dateStr}T${timeStr}:00`);
+  const localDt = new Date(`${dateStr}T${timeStr}:00Z`);
   // Calcula o offset do fuso do usuário nesse instante
   const tzOffset = getTzOffsetMinutes(dateStr, timeStr, USER_TIMEZONE);
   const utcMs = localDt.getTime() + tzOffset * 60 * 1000;
@@ -421,7 +504,7 @@ server.tool(
       method: "POST",
       body: JSON.stringify(body),
     });
-    let msg = `Negócio criado! ID: ${data.data.id} — "${data.data.title}"\nhttps://expertintegrado.pipedrive.com/deal/${data.data.id}`;
+    let msg = `Negócio criado! ID: ${data.data.id} — "${data.data.title}"\nhttps://${COMPANY_DOMAIN}.pipedrive.com/deal/${data.data.id}`;
     if (warnings.length > 0) msg += `\n\nAvisos:\n${warnings.join("\n")}`;
     return { content: [{ type: "text", text: msg }] };
   }
@@ -455,7 +538,7 @@ server.tool(
       method: "PUT",
       body: JSON.stringify(body),
     });
-    return { content: [{ type: "text", text: `Negócio ${deal_id} atualizado com sucesso.\nhttps://expertintegrado.pipedrive.com/deal/${deal_id}` }] };
+    return { content: [{ type: "text", text: `Negócio ${deal_id} atualizado com sucesso.\nhttps://${COMPANY_DOMAIN}.pipedrive.com/deal/${deal_id}` }] };
   }
 );
 
@@ -634,7 +717,7 @@ server.tool(
       method: "POST",
       body: JSON.stringify(body),
     });
-    const dealLink = deal_id ? `\nhttps://expertintegrado.pipedrive.com/deal/${deal_id}` : "";
+    const dealLink = deal_id ? `\nhttps://${COMPANY_DOMAIN}.pipedrive.com/deal/${deal_id}` : "";
     return { content: [{ type: "text", text: `Nota criada! ID: ${data.data.id}${dealLink}` }] };
   }
 );
@@ -771,7 +854,7 @@ server.tool(
     org_id: z.number().optional().describe("ID da organização"),
   },
   async ({ name, email, phone, org_id }) => {
-    const body = { name };
+    const body = { name, visible_to: 3 }; // 3 = empresa inteira
     if (email) body.email = [{ value: email, primary: true }];
     if (phone) body.phone = [{ value: phone, primary: true }];
     if (org_id) body.org_id = org_id;
@@ -779,7 +862,7 @@ server.tool(
       method: "POST",
       body: JSON.stringify(body),
     });
-    return { content: [{ type: "text", text: `Contato criado! ID: ${data.data.id} — "${data.data.name}"\nhttps://expertintegrado.pipedrive.com/person/${data.data.id}` }] };
+    return { content: [{ type: "text", text: `Contato criado! ID: ${data.data.id} — "${data.data.name}"\nhttps://${COMPANY_DOMAIN}.pipedrive.com/person/${data.data.id}` }] };
   }
 );
 
@@ -881,34 +964,19 @@ server.tool(
     owner_id: z.number().optional().describe("ID do usuário responsável"),
   },
   async ({ name, address, owner_id }) => {
-    const body = { name };
+    const body = { name, visible_to: 3 }; // 3 = empresa inteira
     if (address) body.address = address;
     if (owner_id) body.owner_id = owner_id;
     const data = await pipedriveRequest("/organizations", {
       method: "POST",
       body: JSON.stringify(body),
     });
-    return { content: [{ type: "text", text: `Organização criada! ID: ${data.data.id} — "${data.data.name}"\nhttps://expertintegrado.pipedrive.com/organization/${data.data.id}` }] };
+    return { content: [{ type: "text", text: `Organização criada! ID: ${data.data.id} — "${data.data.name}"\nhttps://${COMPANY_DOMAIN}.pipedrive.com/organization/${data.data.id}` }] };
   }
 );
 
 // ─── ATIVIDADES ───────────────────────────────────────────────────────────────
 
-// Mapa de key da API → nome amigável (conforme CLAUDE.md)
-const ACTIVITY_TYPE_NAMES = {
-  whatsapp: "WhatsApp",
-  call: "Chamada",
-  instagram: "Instagram",
-  linkedin: "Linkedin",
-  email: "E-mail",
-  task: "Tarefa",
-  encontro_presencial: "Encontro presencial",
-  diagnostico: "Demonstração",
-  apresentacao: "Reunião Geral",
-  meeting: "NO-SHOW",
-  deadline: "Prazo",
-  recurso_de_ia: "Recurso de IA",
-};
 
 server.tool(
   "list_activities",
@@ -918,12 +986,14 @@ server.tool(
     limit: z.number().optional().default(100).describe("Quantidade máxima de resultados por página (máx 500). Ignorado quando start_date/end_date são fornecidos (busca todas as páginas)."),
     start: z.number().optional().default(0).describe("Offset para paginação"),
     user_id: z.number().optional().describe("Filtrar por usuário (ID). Use list_users para ver IDs disponíveis."),
-    type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline", "recurso_de_ia"]).optional().describe("Filtrar por tipo de atividade"),
+    type: z.string().optional().describe("Filtrar por tipo de atividade. Aceita key da API, nome ou alias."),
     start_date: z.string().optional().describe("Data inicial do filtro por due_date (YYYY-MM-DD). Filtra no lado do cliente após buscar todas as páginas."),
     end_date: z.string().optional().describe("Data final do filtro por due_date (YYYY-MM-DD). Filtra no lado do cliente após buscar todas as páginas."),
     deal_id: z.number().optional().describe("Filtrar por negócio (ID)"),
   },
   async ({ done, limit, start, user_id, type, start_date, end_date, deal_id }) => {
+    await ensureActivityTypesLoaded();
+    if (type) type = resolveActivityType(type);
     const today = new Date().toISOString().split("T")[0];
 
     // Se filtro de data fornecido, busca TODAS as páginas e filtra por due_date no cliente
@@ -958,10 +1028,11 @@ server.tool(
 
       const activities = filtered.map((a) => ({
         id: a.id,
-        tipo: ACTIVITY_TYPE_NAMES[a.type] || a.type,
+        tipo: ACTIVITY_TYPES[a.type]?.name || a.type,
         assunto: a.subject,
         data: a.due_date,
         hora: utcToLocal(a.due_time, a.due_date), // converte UTC → Brasília para exibição
+        duracao: a.duration || null,
         concluida: a.done,
         atrasada: !a.done && a.due_date ? a.due_date < today : false,
         negocio_id: a.deal_id,
@@ -992,10 +1063,11 @@ server.tool(
     const data = await pipedriveRequest(path);
     const activities = (data.data || []).map((a) => ({
       id: a.id,
-      tipo: ACTIVITY_TYPE_NAMES[a.type] || a.type,
+      tipo: ACTIVITY_TYPES[a.type]?.name || a.type,
       assunto: a.subject,
       data: a.due_date,
       hora: utcToLocal(a.due_time, a.due_date), // converte UTC → Brasília para exibição
+      duracao: a.duration || null,
       concluida: a.done,
       atrasada: !a.done && a.due_date ? a.due_date < today : false,
       negocio_id: a.deal_id,
@@ -1027,6 +1099,7 @@ server.tool(
     start: z.number().optional().default(0).describe("Offset para paginação"),
   },
   async ({ deal_id, done, limit, start }) => {
+    await ensureActivityTypesLoaded();
     const effectiveLimit = Math.min(limit, 500);
     let path = `/deals/${deal_id}/activities?limit=${effectiveLimit}&start=${start}`;
     if (done !== "all") path += `&done=${done}`;
@@ -1034,10 +1107,11 @@ server.tool(
     const today = new Date().toISOString().split("T")[0];
     const activities = (data.data || []).map((a) => ({
       id: a.id,
-      tipo: ACTIVITY_TYPE_NAMES[a.type] || a.type,
+      tipo: ACTIVITY_TYPES[a.type]?.name || a.type,
       assunto: a.subject,
       data: a.due_date,
       hora: utcToLocal(a.due_time, a.due_date), // converte UTC → Brasília para exibição
+      duracao: a.duration || null,
       concluida: a.done,
       atrasada: !a.done && a.due_date ? a.due_date < today : false,
       negocio_id: a.deal_id,
@@ -1065,13 +1139,16 @@ server.tool(
 
 server.tool(
   "list_activity_types",
-  "Lista todos os tipos de atividade disponíveis (nativos e personalizados).",
+  "Lista todos os tipos de atividade disponíveis (nativos e personalizados), incluindo aliases e duração padrão configurados via sync_activity_types.",
   {},
   async () => {
+    await ensureActivityTypesLoaded();
     const data = await pipedriveRequest("/activityTypes");
     const types = (data.data || []).map((t) => ({
       key: t.key_string,
-      nome: ACTIVITY_TYPE_NAMES[t.key_string] || t.name,
+      nome: ACTIVITY_TYPES[t.key_string]?.name || t.name,
+      aliases: ACTIVITY_TYPES[t.key_string]?.aliases || [],
+      duracao_padrao_min: ACTIVITY_TYPES[t.key_string]?.default_duration || null,
       personalizado: !!t.is_custom_flag,
       ativo: !!t.active_flag,
     }));
@@ -1081,19 +1158,25 @@ server.tool(
 
 server.tool(
   "create_activity",
-  "Cria uma nova atividade/tarefa no Pipedrive. Tipos: whatsapp, call (Chamada), instagram, linkedin, email, task (Tarefa), encontro_presencial, diagnostico (Demonstração), apresentacao (Reunião Geral), meeting (NO-SHOW), deadline (Prazo), recurso_de_ia (Recurso de IA).",
+  "Cria uma nova atividade/tarefa no Pipedrive. Aceita key da API, nome ou alias como tipo. Use list_activity_types para ver tipos disponíveis.",
   {
     subject: z.string().describe("Assunto da atividade"),
-    type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline", "recurso_de_ia"]).describe("Tipo da atividade"),
+    type: z.string().describe("Tipo da atividade. Aceita key da API, nome ou alias. Use list_activity_types para referência."),
     due_date: z.string().optional().describe("Data de vencimento (YYYY-MM-DD). Opcional para tarefas sem prazo definido."),
     due_time: z.string().optional().describe("Hora de vencimento (HH:MM)"),
+    duration: z.number().optional().describe("Duração em minutos. Se omitido, usa duração padrão do tipo (se configurada)."),
     deal_id: z.number().optional().describe("ID do negócio relacionado. SEMPRE informar quando a atividade pertence a um deal — sem isso a atividade fica órfã e não aparece no card do Pipedrive."),
     person_id: z.number().optional().describe("ID do contato relacionado"),
     user_id: z.number().optional().describe("ID do usuário responsável (use list_users para ver IDs)"),
     note: z.string().optional().describe("Nota/observação"),
   },
-  async ({ subject, type, due_date, due_time, deal_id, person_id, user_id, note }) => {
-    const body = { subject, type, due_date };
+  async ({ subject, type, due_date, due_time, duration, deal_id, person_id, user_id, note }) => {
+    await ensureActivityTypesLoaded();
+    const resolvedType = resolveActivityType(type);
+    const body = { subject, type: resolvedType, due_date };
+    // Duração: explícita > default do config > nenhuma
+    const dur = duration || ACTIVITY_TYPES[resolvedType]?.default_duration;
+    if (dur) body.duration = minutesToHHMM(dur);
     if (due_time) body.due_time = localToUtc(due_time, due_date); // converte Brasília → UTC
     if (deal_id) body.deal_id = deal_id;
     if (person_id) body.person_id = person_id;
@@ -1103,33 +1186,36 @@ server.tool(
       method: "POST",
       body: JSON.stringify(body),
     });
-    const dealLink = data.data.deal_id ? `\nhttps://expertintegrado.pipedrive.com/deal/${data.data.deal_id}` : "";
+    const dealLink = data.data.deal_id ? `\nhttps://${COMPANY_DOMAIN}.pipedrive.com/deal/${data.data.deal_id}` : "";
     return { content: [{ type: "text", text: `Atividade criada! ID: ${data.data.id} — "${data.data.subject}"${dealLink}` }] };
   }
 );
 
 server.tool(
   "update_activity",
-  "Atualiza uma atividade: marcar como feita, reagendar, mudar responsável ou tipo.",
+  "Atualiza uma atividade: marcar como feita, reagendar, mudar responsável ou tipo. Aceita key, nome ou alias como tipo.",
   {
     activity_id: z.number().describe("ID da atividade"),
     done: z.boolean().optional().describe("Marcar como concluída (true) ou pendente (false)"),
     subject: z.string().optional().describe("Novo assunto"),
-    type: z.enum(["whatsapp", "call", "instagram", "linkedin", "email", "task", "encontro_presencial", "diagnostico", "apresentacao", "meeting", "deadline", "recurso_de_ia"]).optional().describe("Novo tipo"),
+    type: z.string().optional().describe("Novo tipo. Aceita key da API, nome ou alias."),
     due_date: z.string().optional().describe("Nova data (YYYY-MM-DD)"),
     due_time: z.string().optional().describe("Nova hora (HH:MM)"),
+    duration: z.number().optional().describe("Nova duração em minutos."),
     user_id: z.number().optional().describe("Novo responsável (ID do usuário)"),
     deal_id: z.number().optional().describe("Vincular a um negócio (deal_id)"),
     note: z.string().optional().describe("Nova nota/observação"),
   },
-  async ({ activity_id, done, subject, type, due_date, due_time, user_id, deal_id, note }) => {
+  async ({ activity_id, done, subject, type, due_date, due_time, duration, user_id, deal_id, note }) => {
+    await ensureActivityTypesLoaded();
     const body = {};
     if (done !== undefined) body.done = done ? 1 : 0;
     if (subject) body.subject = subject;
-    if (type) body.type = type;
+    if (type) body.type = resolveActivityType(type);
     if (due_date) body.due_date = due_date;
     // converte Brasília → UTC; se vier due_time sem due_date, usa hoje como referência
     if (due_time) body.due_time = localToUtc(due_time, due_date || new Date().toISOString().slice(0, 10));
+    if (duration) body.duration = minutesToHHMM(duration);
     if (user_id) body.user_id = user_id;
     if (deal_id) body.deal_id = deal_id;
     if (note) body.note = note.replace(/\n/g, "<br>"); // API ignora \n, aceita HTML <br>
@@ -1339,7 +1425,7 @@ server.tool(
         body: JSON.stringify(safeBody),
       });
     }
-    let msg = `Negócio ${deal_id} atualizado! Campos alterados: ${Object.keys(parsed).join(", ")}\nhttps://expertintegrado.pipedrive.com/deal/${deal_id}`;
+    let msg = `Negócio ${deal_id} atualizado! Campos alterados: ${Object.keys(parsed).join(", ")}\nhttps://${COMPANY_DOMAIN}.pipedrive.com/deal/${deal_id}`;
     if (force && conflicts.length > 0) {
       msg += `\n(${conflicts.length} campo(s) sobrescrito(s) com confirmação do usuário: ${conflicts.map((c) => `"${c.field}"`).join(", ")})`;
     }
@@ -1356,20 +1442,24 @@ server.tool(
   {},
   async () => {
     const fieldsLoaded = Object.keys(DEAL_CUSTOM_FIELDS).length > 0;
+    const typesLoaded = Object.keys(ACTIVITY_TYPES).length > 0;
 
-    if (!fieldsLoaded) {
-      // PASSO 1: sync_fields ainda não foi executado
+    if (!fieldsLoaded || !typesLoaded) {
+      // PASSO 1: Sincronizações pendentes
+      const pending = [];
+      if (!fieldsLoaded) pending.push("1. sync_fields — mapeia campos personalizados de negócios");
+      if (!typesLoaded) pending.push(`${pending.length + 1}. sync_activity_types — mapeia tipos de atividade (nomes, aliases, durações)`);
       const msg = [
         "=== ONBOARDING — Pipedrive MCP ===",
         "",
         "Bem-vindo! Este MCP permite que o Claude interaja diretamente com o seu Pipedrive.",
         "",
-        "PASSO 1 DE 3 — Sincronizar campos personalizados",
+        "PASSO 1 DE 3 — Sincronizar dados da conta",
         "",
-        "O primeiro passo é mapear os campos personalizados da sua conta.",
-        "Execute a ferramenta sync_fields agora.",
+        "Execute as ferramentas de sincronização pendentes:",
+        ...pending,
         "",
-        'Diga ao Claude: "Execute sync_fields"',
+        'Diga ao Claude: "Execute sync_fields e sync_activity_types"',
         "",
         "Após sincronizar, execute onboarding novamente para o próximo passo.",
       ];
@@ -1400,14 +1490,20 @@ server.tool(
       pipelineInfo = "\n  (Não foi possível carregar pipelines)";
     }
 
-    // Buscar tipos de atividade
+    // Tipos de atividade — usa dados do config carregado
     let activityInfo = "";
-    try {
-      const actData = await pipedriveRequest("/activityTypes");
-      const types = (actData.data || []).map((t) => `${t.name} (${t.key_string})`);
-      activityInfo = types.join(", ");
-    } catch {
-      activityInfo = "(Não foi possível carregar tipos de atividade)";
+    if (Object.keys(ACTIVITY_TYPES).length > 0) {
+      activityInfo = Object.entries(ACTIVITY_TYPES)
+        .filter(([_, t]) => t.active)
+        .map(([key, t]) => `${t.name} (${key})` + (t.default_duration ? ` [${t.default_duration}min]` : ""))
+        .join(", ");
+    } else {
+      try {
+        const actData = await pipedriveRequest("/activityTypes");
+        activityInfo = (actData.data || []).map((t) => `${t.name} (${t.key_string})`).join(", ");
+      } catch {
+        activityInfo = "(Não foi possível carregar tipos de atividade)";
+      }
     }
 
     const msg = [
@@ -1538,10 +1634,132 @@ server.tool(
   }
 );
 
+server.tool(
+  "sync_activity_types",
+  "Sincroniza tipos de atividade do Pipedrive. Gera activity_types.js com nomes, aliases e durações padrão. Preserva aliases e durações configurados pelo usuário no re-sync.",
+  {},
+  async () => {
+    try {
+      // 1. Buscar tipos da API
+      const data = await pipedriveRequest("/activityTypes");
+      const apiTypes = data.data || [];
+
+      if (apiTypes.length === 0) {
+        return { content: [{ type: "text", text: "Nenhum tipo de atividade encontrado nesta conta do Pipedrive." }] };
+      }
+
+      // 2. Carregar config existente para merge (preservar aliases e durations do usuário)
+      let existing = {};
+      try {
+        const mod = await import(new URL("./activity_types.js", import.meta.url).href + "?t=" + Date.now());
+        existing = mod.ACTIVITY_TYPES || {};
+      } catch (_) {
+        // Primeiro sync — sem arquivo existente
+      }
+
+      // 3. Merge: API fornece name/is_custom/active, usuário preserva aliases/default_duration
+      const merged = {};
+      let newCount = 0;
+      let updatedCount = 0;
+
+      for (const t of apiTypes) {
+        const key = t.key_string;
+        const prev = existing[key];
+
+        if (prev) {
+          // Tipo existente — preservar aliases e duration do usuário, atualizar da API
+          merged[key] = {
+            name: t.name,
+            aliases: prev.aliases || [t.name.toLowerCase()],
+            default_duration: prev.default_duration || null,
+            is_custom: !!t.is_custom_flag,
+            active: !!t.active_flag,
+          };
+          updatedCount++;
+        } else {
+          // Tipo novo — criar com name como alias
+          merged[key] = {
+            name: t.name,
+            aliases: [t.name.toLowerCase()],
+            default_duration: null,
+            is_custom: !!t.is_custom_flag,
+            active: !!t.active_flag,
+          };
+          newCount++;
+        }
+      }
+
+      // 4. Tipos que existiam no config mas foram removidos da API → marcar inactive
+      let removedCount = 0;
+      for (const [key, prev] of Object.entries(existing)) {
+        if (!merged[key]) {
+          merged[key] = { ...prev, active: false };
+          removedCount++;
+        }
+      }
+
+      // 5. Salvar activity_types.js
+      const lines = [
+        "// Tipos de atividade do Pipedrive — configurável por empresa",
+        `// Sincronizado automaticamente em ${new Date().toISOString().split("T")[0]}`,
+        "// aliases e default_duration são preservados no re-sync",
+        "// Edite aliases e durações manualmente ou via agente conforme necessidade",
+        "",
+        "export const ACTIVITY_TYPES = " + JSON.stringify(merged, null, 2) + ";",
+        "",
+      ];
+
+      fs.writeFileSync(ACTIVITY_TYPES_PATH, lines.join("\n"), "utf-8");
+
+      // 6. Atualizar memória imediatamente
+      ACTIVITY_TYPES = merged;
+      rebuildTypeLookup();
+
+      // 7. Retornar resumo
+      const activeTypes = Object.entries(merged)
+        .filter(([_, t]) => t.active)
+        .map(([key, t]) => `  - ${t.name} (${key})` + (t.default_duration ? ` [${t.default_duration}min]` : ""))
+        .join("\n");
+
+      const summary = [
+        `Tipos de atividade sincronizados!`,
+        ``,
+        `Total: ${Object.keys(merged).length} tipos`,
+        `  - ${newCount} novos`,
+        `  - ${updatedCount} atualizados (aliases e durações preservados)`,
+        removedCount > 0 ? `  - ${removedCount} desativados (removidos da API)` : null,
+        ``,
+        `Tipos ativos:`,
+        activeTypes,
+        ``,
+        `Para configurar aliases e durações padrão, edite activity_types.js`,
+        `ou peça ao agente: "Configure o tipo call com alias ligação e duração 15min"`,
+      ].filter(Boolean);
+
+      return { content: [{ type: "text", text: summary.join("\n") }] };
+    } catch (err) {
+      return {
+        content: [{
+          type: "text",
+          text: `Erro ao sincronizar tipos de atividade: ${err.message}\n\nVerifique:\n1. O token da API (PIPEDRIVE_API_KEY) é válido?\n2. O token tem permissão para acessar tipos de atividade?`,
+        }],
+      };
+    }
+  }
+);
+
 // ─── START ────────────────────────────────────────────────────────────────────
 
 // Carregar cache de etapas/pipelines para tradução de IDs → nomes
 await loadStagePipelineCache();
+
+// Carregar domínio da empresa para links dinâmicos
+try {
+  const me = await pipedriveRequest("/users/me");
+  if (me.data?.company_domain) COMPANY_DOMAIN = me.data.company_domain;
+} catch (err) {
+  console.error("[pipedrive-mcp] Aviso: não foi possível carregar domínio da empresa:", err.message);
+}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

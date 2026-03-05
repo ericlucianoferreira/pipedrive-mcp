@@ -99,13 +99,21 @@ Regras operacionais do CRM. Toda acao no Pipedrive DEVE seguir estas regras.
 
 ## Tipos de Atividade
 
-Ao criar atividade, usar SEMPRE um destes tipos (key da API entre parenteses):
+> Execute `sync_activity_types` para sincronizar os tipos da sua conta.
+> Execute `list_activity_types` para ver os tipos com aliases e duracoes.
+> Edite `activity_types.js` para configurar aliases e duracoes padrao.
 
-1. [Tipo 1] (`[key_api]`)
-2. [Tipo 2] (`[key_api]`)
-3. [Tipo 3] (`[key_api]`)
+| Tipo | Key API | Aliases | Duracao padrao |
+|------|---------|---------|:-:|
+| [Nome 1] | `[key_1]` | [alias1, alias2] | [X] min |
+| [Nome 2] | `[key_2]` | [alias1, alias2] | [X] min |
+| [Nome 3] | `[key_3]` | [alias1, alias2] | [X] min |
 
-> **Dica:** Execute `list_activity_types` no MCP para ver os tipos disponiveis na sua conta.
+### Regras de atividade
+- Todo deal DEVE ter proxima atividade agendada. Sem excecao.
+- Ao criar atividade, usar nome amigavel ou alias (ex: "ligacao" em vez de "call")
+- Duracoes padrao sao aplicadas automaticamente quando nao especificadas
+- [Adicione suas regras especificas aqui]
 
 ---
 

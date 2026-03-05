@@ -227,5 +227,41 @@ Campo `nome` usava `t.name` (dado da API) em vez do mapa `ACTIVITY_TYPE_NAMES`.
 
 ---
 
-## Próximos passos
+## Bug #24 — `create_person` e `create_organization` sem `visible_to`
+**Status:** Corrigido — v5.5.0
+
+Mesmo bug do #6 (deals), mas para contatos e organizacoes. Registros criados ficavam visiveis apenas para o dono do token.
+
+**Correcao:** Adicionado `visible_to: 3` (empresa inteira) no body de `create_person` e `create_organization`.
+
+---
+
+## Bug #25 — Timezone double-offset no `localToUtc`
+**Status:** Corrigido — v5.5.0
+
+`new Date("2026-03-05T14:00:00")` sem sufixo `Z` era interpretado como horario local pelo JS (UTC-3), e depois a funcao somava mais +3h de offset. Resultado: atividade criada para 14h aparecia as 20h no Pipedrive (+6h total).
+
+**Correcao:** Adicionado `Z` no construtor: `new Date("...T14:00:00Z")` forca interpretacao como UTC antes de aplicar o offset.
+
+---
+
+## Bug #26 — Tipos de atividade hardcoded impedem uso multi-empresa
+**Status:** Corrigido — v5.5.0
+
+`ACTIVITY_TYPE_NAMES` e `z.enum` tinham 12 tipos fixos da Expert Integrado. Outras empresas com tipos diferentes recebiam erro de validacao Zod.
+
+**Correcao:** Removido hardcode. Novo sistema `activity_types.js` com `sync_activity_types` (sync automatico), aliases configuraveis, duracoes padrao por tipo, e `z.string()` em vez de `z.enum()`.
+
+---
+
+## Bug #27 — Links hardcoded com "expertintegrado.pipedrive.com"
+**Status:** Corrigido — v5.5.0
+
+6 ocorrencias de `expertintegrado.pipedrive.com` nos links de resposta dos tools de criacao/atualizacao. Outras empresas viam links para o dominio errado.
+
+**Correcao:** Variavel `COMPANY_DOMAIN` carregada via `/users/me` no startup. Todos os links usam template dinamico `${COMPANY_DOMAIN}.pipedrive.com`.
+
+---
+
+## Proximos passos
 - [ ] Documentar regra: verificar `deal_id` antes de reutilizar atividade
