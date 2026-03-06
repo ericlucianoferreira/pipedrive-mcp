@@ -6,11 +6,17 @@ import { fileURLToPath } from "url";
 
 const FIELDS_PATH = fileURLToPath(new URL("./fields.js", import.meta.url));
 const ACTIVITY_TYPES_PATH = fileURLToPath(new URL("./activity_types.js", import.meta.url));
+const PERSON_FIELDS_PATH = fileURLToPath(new URL("./person_fields.js", import.meta.url));
 
 // Store mutável — começa vazio, preenchido pelo sync_fields ou pelo arquivo existente
 let DEAL_CUSTOM_FIELDS = {};
 let KEY_TO_NAME = {};
 let KEY_TO_OPTIONS = {};
+
+// Campos personalizados de pessoa — carregado de person_fields.js ou via sync_person_fields
+let PERSON_CUSTOM_FIELDS = {};
+let PERSON_KEY_TO_NAME = {};
+let PERSON_KEY_TO_OPTIONS = {};
 
 // Cache de etapas e pipelines — carregado na inicialização e atualizado pelo sync_fields
 let STAGE_MAP = {};    // { id: "Nome da Etapa" }
@@ -31,6 +37,21 @@ function rebuildReverseMaps() {
         idToLabel[id] = label;
       }
       KEY_TO_OPTIONS[field.key] = idToLabel;
+    }
+  }
+}
+
+function rebuildPersonReverseMaps() {
+  PERSON_KEY_TO_NAME = {};
+  PERSON_KEY_TO_OPTIONS = {};
+  for (const [name, field] of Object.entries(PERSON_CUSTOM_FIELDS)) {
+    PERSON_KEY_TO_NAME[field.key] = name;
+    if (field.options) {
+      const idToLabel = {};
+      for (const [label, id] of Object.entries(field.options)) {
+        idToLabel[id] = label;
+      }
+      PERSON_KEY_TO_OPTIONS[field.key] = idToLabel;
     }
   }
 }
@@ -131,6 +152,19 @@ try {
     console.error("[pipedrive-mcp] activity_types.js não encontrado. Execute sync_activity_types para configurar tipos de atividade.");
   } else {
     console.error("[pipedrive-mcp] Erro ao carregar activity_types.js:", err.message);
+  }
+}
+
+// Tenta carregar person_fields.js existente na inicialização
+try {
+  const mod3 = await import(new URL("./person_fields.js", import.meta.url).href);
+  PERSON_CUSTOM_FIELDS = mod3.PERSON_CUSTOM_FIELDS || {};
+  rebuildPersonReverseMaps();
+} catch (err) {
+  if (err.code === "ERR_MODULE_NOT_FOUND" || err.message?.includes("Cannot find")) {
+    console.error("[pipedrive-mcp] person_fields.js não encontrado. Execute sync_person_fields para sincronizar campos de contato.");
+  } else {
+    console.error("[pipedrive-mcp] Erro ao carregar person_fields.js:", err.message);
   }
 }
 
@@ -304,6 +338,45 @@ function resolveCustomFields(fields) {
   return { body, errors };
 }
 
+function resolvePersonCustomFields(fields) {
+  const body = {};
+  const errors = [];
+  for (const [name, value] of Object.entries(fields)) {
+    const field = PERSON_CUSTOM_FIELDS[name];
+    if (!field) { errors.push(`Campo de pessoa "${name}" não existe. Execute sync_person_fields para atualizar.`); continue; }
+    if (field.type === "enum") {
+      const optionId = field.options?.[value];
+      if (optionId === undefined) {
+        errors.push(`"${name}": valor "${value}" inválido. Opções: ${Object.keys(field.options).join(", ")}`);
+        continue;
+      }
+      body[field.key] = optionId;
+    } else if (field.type === "set") {
+      const values = Array.isArray(value) ? value : value.split(",").map((v) => v.trim());
+      const ids = [];
+      for (const v of values) {
+        const optionId = field.options?.[v];
+        if (optionId === undefined) {
+          errors.push(`"${name}": valor "${v}" inválido. Opções: ${Object.keys(field.options).join(", ")}`);
+        } else {
+          ids.push(optionId);
+        }
+      }
+      if (ids.length > 0) body[field.key] = ids.join(",");
+    } else if (field.type === "double" || field.type === "user") {
+      const num = Number(value);
+      if (isNaN(num)) {
+        errors.push(`"${name}": valor "${value}" não é um número válido.`);
+        continue;
+      }
+      body[field.key] = num;
+    } else {
+      body[field.key] = String(value);
+    }
+  }
+  return { body, errors };
+}
+
 // Traduz campos personalizados de um deal para nomes legíveis
 function translateDealFields(deal) {
   const result = {
@@ -342,7 +415,7 @@ function translateDealFields(deal) {
 
 const server = new McpServer({
   name: "pipedrive-mcp",
-  version: "5.6.0",
+  version: "5.7.0",
 });
 
 // ─── NEGÓCIOS ────────────────────────────────────────────────────────────────
@@ -882,9 +955,10 @@ server.tool(
     email: z.string().optional().describe("E-mail do contato"),
     phone: z.string().optional().describe("Telefone do contato"),
     org_id: z.number().optional().describe("ID da organização"),
+    custom_fields: z.string().optional().describe('JSON com campos personalizados de contato. Ex: {"Origem do Contato": "Super SDR"}. Execute sync_person_fields primeiro.'),
     force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar duplicata. Use SOMENTE após confirmação explícita do usuário."),
   },
-  async ({ name, email, phone, org_id, force }) => {
+  async ({ name, email, phone, org_id, custom_fields, force }) => {
     // ── Guardrail: buscar duplicatas antes de criar ──
     if (!force) {
       const duplicates = [];
@@ -947,6 +1021,18 @@ server.tool(
     if (email) body.email = [{ value: email, primary: true }];
     if (phone) body.phone = [{ value: phone, primary: true }];
     if (org_id) body.org_id = org_id;
+
+    // Campos personalizados de contato
+    if (custom_fields) {
+      let parsed;
+      try { parsed = JSON.parse(custom_fields); } catch { return { content: [{ type: "text", text: "Erro: custom_fields não é um JSON válido." }] }; }
+      const { body: cfBody, errors } = resolvePersonCustomFields(parsed);
+      if (errors.length > 0) {
+        return { content: [{ type: "text", text: `Erros nos campos personalizados:\n${errors.join("\n")}` }] };
+      }
+      Object.assign(body, cfBody);
+    }
+
     const data = await pipedriveRequest("/persons", {
       method: "POST",
       body: JSON.stringify(body),
@@ -964,9 +1050,10 @@ server.tool(
     email: z.string().optional().describe("Novo e-mail"),
     phone: z.string().optional().describe("Novo telefone"),
     org_id: z.number().optional().describe("ID da nova organização"),
+    custom_fields: z.string().optional().describe('JSON com campos personalizados de contato. Ex: {"Origem do Contato": "Super SDR"}. Execute sync_person_fields primeiro.'),
     force: z.boolean().optional().default(false).describe("Se true, aplica alterações mesmo em campos que já têm valor. Use SOMENTE após confirmação explícita do usuário."),
   },
-  async ({ person_id, name, email, phone, org_id, force }) => {
+  async ({ person_id, name, email, phone, org_id, custom_fields, force }) => {
     // ── Guardrail: buscar dados atuais e avisar sobre sobrescritas ──
     const current = await pipedriveRequest(`/persons/${person_id}`);
     const person = current.data;
@@ -1010,6 +1097,17 @@ server.tool(
       } else {
         body.phone = [...existingPhones, { value: phone, primary: existingPhones.length === 0 }];
       }
+    }
+
+    // Campos personalizados de contato
+    if (custom_fields) {
+      let parsed;
+      try { parsed = JSON.parse(custom_fields); } catch { return { content: [{ type: "text", text: "Erro: custom_fields não é um JSON válido." }] }; }
+      const { body: cfBody, errors } = resolvePersonCustomFields(parsed);
+      if (errors.length > 0) {
+        return { content: [{ type: "text", text: `Erros nos campos personalizados:\n${errors.join("\n")}` }] };
+      }
+      Object.assign(body, cfBody);
     }
 
     // Se não há nada para atualizar
@@ -1630,11 +1728,13 @@ server.tool(
   async () => {
     const fieldsLoaded = Object.keys(DEAL_CUSTOM_FIELDS).length > 0;
     const typesLoaded = Object.keys(ACTIVITY_TYPES).length > 0;
+    const personFieldsLoaded = Object.keys(PERSON_CUSTOM_FIELDS).length > 0;
 
-    if (!fieldsLoaded || !typesLoaded) {
+    if (!fieldsLoaded || !typesLoaded || !personFieldsLoaded) {
       // PASSO 1: Sincronizações pendentes
       const pending = [];
-      if (!fieldsLoaded) pending.push("1. sync_fields — mapeia campos personalizados de negócios");
+      if (!fieldsLoaded) pending.push(`${pending.length + 1}. sync_fields — mapeia campos personalizados de negócios`);
+      if (!personFieldsLoaded) pending.push(`${pending.length + 1}. sync_person_fields — mapeia campos personalizados de contatos`);
       if (!typesLoaded) pending.push(`${pending.length + 1}. sync_activity_types — mapeia tipos de atividade (nomes, aliases, durações)`);
       const msg = [
         "=== ONBOARDING — Pipedrive MCP ===",
@@ -1646,7 +1746,7 @@ server.tool(
         "Execute as ferramentas de sincronização pendentes:",
         ...pending,
         "",
-        'Diga ao Claude: "Execute sync_fields e sync_activity_types"',
+        'Diga ao Claude: "Execute sync_fields, sync_person_fields e sync_activity_types"',
         "",
         "Após sincronizar, execute onboarding novamente para o próximo passo.",
       ];
@@ -1815,6 +1915,79 @@ server.tool(
         content: [{
           type: "text",
           text: `Erro ao sincronizar campos: ${err.message}\n\nVerifique:\n1. O token da API (PIPEDRIVE_API_KEY) é válido?\n2. O token tem permissão para acessar campos personalizados?`,
+        }],
+      };
+    }
+  }
+);
+
+server.tool(
+  "sync_person_fields",
+  "Sincroniza campos personalizados de CONTATOS do Pipedrive. Execute após a primeira instalação ou quando adicionar/alterar campos de pessoa no Pipedrive. Gera person_fields.js.",
+  {},
+  async () => {
+    try {
+      const data = await pipedriveRequest("/personFields?limit=500");
+      const allFields = data.data || [];
+      const customFields = allFields.filter((f) => /^[a-f0-9]{40}$/.test(f.key));
+
+      if (customFields.length === 0) {
+        return { content: [{ type: "text", text: "Nenhum campo personalizado de contato encontrado nesta conta do Pipedrive." }] };
+      }
+
+      const mapping = {};
+      let enumCount = 0;
+      let setCount = 0;
+      let textCount = 0;
+
+      for (const field of customFields) {
+        const entry = { key: field.key, type: field.field_type };
+        if ((field.field_type === "enum" || field.field_type === "set") && field.options) {
+          entry.options = {};
+          for (const opt of field.options) {
+            entry.options[opt.label] = opt.id;
+          }
+          if (field.field_type === "enum") enumCount++;
+          else setCount++;
+        } else {
+          textCount++;
+        }
+        mapping[field.name] = entry;
+      }
+
+      const lines = [
+        "// Mapeamento dos campos personalizados de contatos do Pipedrive",
+        `// Sincronizado automaticamente em ${new Date().toISOString().split("T")[0]}`,
+        "// Para enum/set: options mapeia label → id",
+        "",
+        "export const PERSON_CUSTOM_FIELDS = " + JSON.stringify(mapping, null, 2) + ";",
+        "",
+      ];
+
+      fs.writeFileSync(PERSON_FIELDS_PATH, lines.join("\n"), "utf-8");
+
+      PERSON_CUSTOM_FIELDS = mapping;
+      rebuildPersonReverseMaps();
+
+      const summary = [
+        `Campos personalizados de contatos sincronizados!`,
+        ``,
+        `Total: ${customFields.length} campos`,
+        `  - ${enumCount} enum (seleção única)`,
+        `  - ${setCount} set (múltipla escolha)`,
+        `  - ${textCount} outros (text, double, etc.)`,
+        ``,
+        `Campos carregados na memória — prontos para uso imediato.`,
+        ``,
+        `Agora create_person e update_person aceitam custom_fields com estes campos.`,
+      ];
+
+      return { content: [{ type: "text", text: summary.join("\n") }] };
+    } catch (err) {
+      return {
+        content: [{
+          type: "text",
+          text: `Erro ao sincronizar campos de contato: ${err.message}\n\nVerifique:\n1. O token da API (PIPEDRIVE_API_KEY) é válido?\n2. O token tem permissão para acessar campos de contato?`,
         }],
       };
     }

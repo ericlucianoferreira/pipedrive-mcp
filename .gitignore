@@ -1,6 +1,7 @@
 node_modules/
 .env
 fields.js
+person_fields.js
 activity_types.js
 fields_raw.json
 fields_parsed.json
