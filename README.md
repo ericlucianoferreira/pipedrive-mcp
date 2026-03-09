@@ -25,7 +25,7 @@ Funciona com **qualquer conta do Pipedrive** — cada usuario configura seu prop
 ## Instalacao
 
 ```bash
-git clone https://github.com/ericluciano/pipedrive-mcp.git
+git clone https://github.com/ericlucianoferreira/pipedrive-mcp.git
 cd pipedrive-mcp
 npm install
 ```
