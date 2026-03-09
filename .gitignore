@@ -1,7 +1,26 @@
 node_modules/
 .env
+
+# Campos gerados (sync_fields / sync_activity_types)
 fields.js
 person_fields.js
 activity_types.js
 fields_raw.json
 fields_parsed.json
+
+# Backups de maquina
+*-ERICLUCIANO-PC*
+*-*-PC.*
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude
+.claude/
