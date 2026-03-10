@@ -395,6 +395,7 @@ function translateDealFields(deal) {
     responsavel_id: deal.user_id,
     criado_em: deal.add_time,
     atualizado_em: deal.update_time,
+    previsao_fechamento: deal.expected_close_date,
   };
   for (const [apiKey, fieldName] of Object.entries(KEY_TO_NAME)) {
     const rawValue = deal[apiKey];
@@ -626,8 +627,9 @@ server.tool(
     lost_reason: z.enum(["Parou de responder", "Fora do orçamento", "Adiou contratação", "Mudança de prioridade", "Contratou outra empresa", "Internalizou", "Não é o que buscava", "Ferramenta incompatível / Desqualificado"]).optional().describe("Motivo da perda (obrigatório quando status=lost). Use exatamente um dos 8 motivos padronizados."),
     lost_time: z.string().optional().describe("Data/hora da perda no formato 'YYYY-MM-DD HH:MM:SS'. Permite definir data retroativa de perda."),
     user_id: z.number().optional().describe("Novo responsável do deal (ID do usuário). Use list_users para ver IDs."),
+    expected_close_date: z.string().optional().describe("Data prevista de fechamento no formato YYYY-MM-DD"),
   },
-  async ({ deal_id, title, value, stage_id, pipeline_id, status, lost_reason, lost_time, user_id }) => {
+  async ({ deal_id, title, value, stage_id, pipeline_id, status, lost_reason, lost_time, user_id, expected_close_date }) => {
     const body = {};
     if (title) body.title = title;
     if (value !== undefined) body.value = value;
@@ -637,6 +639,7 @@ server.tool(
     if (lost_reason) body.lost_reason = lost_reason;
     if (lost_time) body.lost_time = lost_time;
     if (user_id) body.user_id = user_id;
+    if (expected_close_date) body.expected_close_date = expected_close_date;
     await pipedriveRequest(`/deals/${deal_id}`, {
       method: "PUT",
       body: JSON.stringify(body),
