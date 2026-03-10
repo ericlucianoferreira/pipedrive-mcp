@@ -1,12 +1,16 @@
 node_modules/
 .env
 
-# Campos gerados (sync_fields / sync_activity_types)
+# Dados da empresa (gerados por sync_all)
+config.js
 fields.js
 person_fields.js
 activity_types.js
 fields_raw.json
 fields_parsed.json
+
+# Backups
+*.backup
 
 # Backups de maquina
 *-ERICLUCIANO-PC*

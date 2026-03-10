@@ -4,9 +4,7 @@ import { z } from "zod";
 import fs from "fs";
 import { fileURLToPath } from "url";
 
-const FIELDS_PATH = fileURLToPath(new URL("./fields.js", import.meta.url));
-const ACTIVITY_TYPES_PATH = fileURLToPath(new URL("./activity_types.js", import.meta.url));
-const PERSON_FIELDS_PATH = fileURLToPath(new URL("./person_fields.js", import.meta.url));
+const CONFIG_PATH = fileURLToPath(new URL("./config.js", import.meta.url));
 
 // Store mutável — começa vazio, preenchido pelo sync_fields ou pelo arquivo existente
 let DEAL_CUSTOM_FIELDS = {};
@@ -18,9 +16,15 @@ let PERSON_CUSTOM_FIELDS = {};
 let PERSON_KEY_TO_NAME = {};
 let PERSON_KEY_TO_OPTIONS = {};
 
-// Cache de etapas e pipelines — carregado na inicialização e atualizado pelo sync_fields
+// Cache de etapas e pipelines — carregado do config.js ou da API
 let STAGE_MAP = {};    // { id: "Nome da Etapa" }
 let PIPELINE_MAP = {}; // { id: "Nome do Pipeline" }
+
+// Usuários ativos — carregado do config.js ou da API
+let ACTIVE_USERS = [];  // [{ id, name }]
+
+// Domínio da empresa — carregado do config.js ou via /users/me no startup
+let COMPANY_DOMAIN = "app"; // fallback genérico
 
 // Tipos de atividade — carregado de activity_types.js ou da API sob demanda
 let ACTIVITY_TYPES = {};   // { key_string: { name, aliases, default_duration, is_custom, active } }
@@ -118,53 +122,44 @@ async function ensureActivityTypesLoaded() {
   _activityTypesLoadingPromise = null;
 }
 
+let STAGES_DATA = []; // [{ id, name, pipeline_id, order }]
+
 async function loadStagePipelineCache() {
   try {
     const pipData = await pipedriveRequest("/pipelines");
     for (const p of pipData.data || []) PIPELINE_MAP[p.id] = p.name;
     const stData = await pipedriveRequest("/stages");
-    for (const s of stData.data || []) STAGE_MAP[s.id] = s.name;
+    STAGES_DATA = (stData.data || []).map(s => ({ id: s.id, name: s.name, pipeline_id: s.pipeline_id, order: s.order_nr }));
+    for (const s of STAGES_DATA) STAGE_MAP[s.id] = s.name;
   } catch (err) {
     console.error("[pipedrive-mcp] Aviso: não foi possível carregar cache de etapas/pipelines:", err.message);
   }
 }
 
-// Tenta carregar fields.js existente na inicialização
+// Tenta carregar config.js unificado na inicialização
 try {
-  const mod = await import(new URL("./fields.js", import.meta.url).href);
-  DEAL_CUSTOM_FIELDS = mod.DEAL_CUSTOM_FIELDS || {};
-  rebuildReverseMaps();
-} catch (err) {
-  if (err.code === "ERR_MODULE_NOT_FOUND" || err.message?.includes("Cannot find")) {
-    console.error("[pipedrive-mcp] fields.js não encontrado. Execute sync_fields para sincronizar campos personalizados.");
-  } else {
-    console.error("[pipedrive-mcp] Erro ao carregar fields.js:", err.message);
+  const cfg = await import(new URL("./config.js", import.meta.url).href);
+  const CONFIG = cfg.CONFIG || {};
+  if (CONFIG.deal_custom_fields) { DEAL_CUSTOM_FIELDS = CONFIG.deal_custom_fields; rebuildReverseMaps(); }
+  if (CONFIG.person_custom_fields) { PERSON_CUSTOM_FIELDS = CONFIG.person_custom_fields; rebuildPersonReverseMaps(); }
+  if (CONFIG.activity_types) { ACTIVITY_TYPES = CONFIG.activity_types; rebuildTypeLookup(); }
+  if (CONFIG.pipelines) {
+    for (const p of CONFIG.pipelines) {
+      PIPELINE_MAP[p.id] = p.name;
+      for (const s of (p.stages || [])) {
+        STAGE_MAP[s.id] = s.name;
+        STAGES_DATA.push({ id: s.id, name: s.name, pipeline_id: p.id, order: s.order });
+      }
+    }
   }
-}
-
-// Tenta carregar activity_types.js existente na inicialização
-try {
-  const mod2 = await import(new URL("./activity_types.js", import.meta.url).href);
-  ACTIVITY_TYPES = mod2.ACTIVITY_TYPES || {};
-  rebuildTypeLookup();
+  if (CONFIG.users) { ACTIVE_USERS = CONFIG.users; }
+  if (CONFIG.company_domain) { COMPANY_DOMAIN = CONFIG.company_domain; }
+  console.error(`[pipedrive-mcp] config.js carregado (sincronizado em ${CONFIG.synced_at || "N/A"})`);
 } catch (err) {
   if (err.code === "ERR_MODULE_NOT_FOUND" || err.message?.includes("Cannot find")) {
-    console.error("[pipedrive-mcp] activity_types.js não encontrado. Execute sync_activity_types para configurar tipos de atividade.");
+    console.error("[pipedrive-mcp] config.js não encontrado. Execute sync_all para sincronizar.");
   } else {
-    console.error("[pipedrive-mcp] Erro ao carregar activity_types.js:", err.message);
-  }
-}
-
-// Tenta carregar person_fields.js existente na inicialização
-try {
-  const mod3 = await import(new URL("./person_fields.js", import.meta.url).href);
-  PERSON_CUSTOM_FIELDS = mod3.PERSON_CUSTOM_FIELDS || {};
-  rebuildPersonReverseMaps();
-} catch (err) {
-  if (err.code === "ERR_MODULE_NOT_FOUND" || err.message?.includes("Cannot find")) {
-    console.error("[pipedrive-mcp] person_fields.js não encontrado. Execute sync_person_fields para sincronizar campos de contato.");
-  } else {
-    console.error("[pipedrive-mcp] Erro ao carregar person_fields.js:", err.message);
+    console.error("[pipedrive-mcp] Erro ao carregar config.js:", err.message);
   }
 }
 
@@ -174,9 +169,6 @@ if (!API_KEY) {
   process.exit(1);
 }
 const BASE_URL = "https://api.pipedrive.com/v1";
-
-// Domínio da empresa — carregado via /users/me no startup
-let COMPANY_DOMAIN = "app"; // fallback genérico
 
 // ─── TIMEZONE ─────────────────────────────────────────────────────────────────
 // O Pipedrive armazena due_time em UTC. O usuário informa horários em
@@ -416,8 +408,55 @@ function translateDealFields(deal) {
 
 const server = new McpServer({
   name: "pipedrive-mcp",
-  version: "5.7.0",
+  version: "6.0.0",
 });
+
+// ─── REFRESH DE DADOS VIA API (usa config.js como fallback se API falhar) ───
+
+try {
+  await loadStagePipelineCache();
+  await ensureActivityTypesLoaded();
+  const userData = await pipedriveRequest("/users?limit=500");
+  ACTIVE_USERS = (userData.data || []).filter(u => u.active_flag).map(u => ({ id: u.id, name: u.name }));
+  const me = await pipedriveRequest("/users/me");
+  if (me.data?.company_domain) COMPANY_DOMAIN = me.data.company_domain;
+} catch (err) {
+  // Se API falhar, usa dados do config.js (já carregados acima)
+  if (Object.keys(PIPELINE_MAP).length > 0) {
+    console.error("[pipedrive-mcp] API indisponível — usando dados do config.js");
+  } else {
+    console.error("[pipedrive-mcp] Aviso: sem dados de referência (API falhou e config.js não existe). Execute sync_all.");
+  }
+}
+
+// Referências estáticas embutidas nas descrições dos tools
+function buildPipelineStagesRef() {
+  if (Object.keys(PIPELINE_MAP).length === 0) return "";
+  const lines = Object.entries(PIPELINE_MAP).map(([pid, pname]) => {
+    const stages = STAGES_DATA
+      .filter(s => s.pipeline_id == pid)
+      .sort((a, b) => a.order - b.order)
+      .map(s => `${s.name}(${s.id})`)
+      .join(" → ");
+    return `  ${pname}(${pid}): ${stages}`;
+  });
+  return "\nPipelines e etapas disponíveis:\n" + lines.join("\n");
+}
+
+function buildUsersRef() {
+  if (ACTIVE_USERS.length === 0) return "";
+  return "\nUsuários ativos: " + ACTIVE_USERS.map(u => `${u.name}(${u.id})`).join(", ");
+}
+
+function buildActivityTypesRef() {
+  const active = Object.entries(ACTIVITY_TYPES).filter(([_, t]) => t.active);
+  if (active.length === 0) return "";
+  return "\nTipos de atividade: " + active.map(([key, t]) => `${t.name}(${key})`).join(", ");
+}
+
+const PIPELINES_REF = buildPipelineStagesRef();
+const USERS_REF = buildUsersRef();
+const ACTIVITY_TYPES_REF = buildActivityTypesRef();
 
 // ─── NEGÓCIOS ────────────────────────────────────────────────────────────────
 
@@ -428,7 +467,7 @@ server.tool(
     status: z.enum(["open", "won", "lost", "all"]).optional().default("open").describe("Status dos negócios"),
     pipeline_id: z.number().optional().describe("ID do pipeline para filtrar"),
     stage_id: z.number().optional().describe("ID da etapa para filtrar"),
-    user_id: z.number().optional().describe("ID do responsável para filtrar. Use list_users para ver IDs."),
+    user_id: z.number().optional().describe("ID do responsável para filtrar"),
     limit: z.number().optional().default(100).describe("Quantidade máxima de resultados por página (máx 500)"),
     start: z.number().optional().default(0).describe("Offset para paginação. Use 0 para primeira página, ou o valor de proximo_inicio da resposta anterior."),
     buscar_todos: z.boolean().optional().default(false).describe("Se true, busca TODAS as páginas automaticamente (máx 5000 registros). Ignora start/limit."),
@@ -543,7 +582,7 @@ server.tool(
 
 server.tool(
   "create_deal",
-  "Cria um novo negócio no Pipedrive. Aceita campos personalizados via custom_fields. IMPORTANTE: Se person_id for informado, o MCP busca automaticamente se já existe deal aberto para esse contato. Se encontrar, retorna aviso com link em vez de criar.",
+  `Cria um novo negócio no Pipedrive. Aceita campos personalizados via custom_fields. IMPORTANTE: Se person_id for informado, o MCP busca automaticamente se já existe deal aberto para esse contato. Se encontrar, retorna aviso com link em vez de criar.${PIPELINES_REF}${USERS_REF}`,
   {
     title: z.string().describe("Título do negócio"),
     value: z.number().optional().describe("Valor do negócio"),
@@ -552,7 +591,7 @@ server.tool(
     org_id: z.number().optional().describe("ID da organização"),
     pipeline_id: z.number().optional().describe("ID do pipeline"),
     stage_id: z.number().optional().describe("ID da etapa"),
-    user_id: z.number().optional().describe("ID do responsável. Se omitido, atribui ao dono do token. Use list_users para ver IDs."),
+    user_id: z.number().optional().describe("ID do responsável. Se omitido, atribui ao dono do token."),
     custom_fields: z.string().optional().describe('JSON com campos personalizados. Ex: {"Segmento": "Jurídico", "Origem da Oportunidade": "INDIC | Geral"}'),
     force: z.boolean().optional().default(false).describe("Se true, cria mesmo se existir deal aberto para o contato. Use SOMENTE após confirmação explícita do usuário."),
   },
@@ -616,7 +655,7 @@ server.tool(
 
 server.tool(
   "update_deal",
-  "Atualiza um negócio (status, etapa, pipeline, valor, etc.).",
+  `Atualiza um negócio (status, etapa, pipeline, valor, etc.).${PIPELINES_REF}${USERS_REF}`,
   {
     deal_id: z.number().describe("ID do negócio"),
     title: z.string().optional().describe("Novo título"),
@@ -626,7 +665,7 @@ server.tool(
     status: z.enum(["open", "won", "lost"]).optional().describe("Novo status"),
     lost_reason: z.enum(["Parou de responder", "Fora do orçamento", "Adiou contratação", "Mudança de prioridade", "Contratou outra empresa", "Internalizou", "Não é o que buscava", "Ferramenta incompatível / Desqualificado"]).optional().describe("Motivo da perda (obrigatório quando status=lost). Use exatamente um dos 8 motivos padronizados."),
     lost_time: z.string().optional().describe("Data/hora da perda no formato 'YYYY-MM-DD HH:MM:SS'. Permite definir data retroativa de perda."),
-    user_id: z.number().optional().describe("Novo responsável do deal (ID do usuário). Use list_users para ver IDs."),
+    user_id: z.number().optional().describe("Novo responsável do deal (ID do usuário)"),
     expected_close_date: z.string().optional().describe("Data prevista de fechamento no formato YYYY-MM-DD"),
   },
   async ({ deal_id, title, value, stage_id, pipeline_id, status, lost_reason, lost_time, user_id, expected_close_date }) => {
@@ -645,64 +684,6 @@ server.tool(
       body: JSON.stringify(body),
     });
     return { content: [{ type: "text", text: `Negócio ${deal_id} atualizado com sucesso.\nhttps://${COMPANY_DOMAIN}.pipedrive.com/deal/${deal_id}` }] };
-  }
-);
-
-server.tool(
-  "get_deal_summary",
-  "Retorna um resumo estatístico dos negócios (valores totais e contagens por status).",
-  {
-    status: z.enum(["open", "won", "lost", "all"]).optional().default("open").describe("Status dos negócios"),
-    filter_id: z.number().optional().describe("ID de um filtro salvo no Pipedrive"),
-    pipeline_id: z.number().optional().describe("ID do pipeline"),
-    stage_id: z.number().optional().describe("ID da etapa"),
-    user_id: z.number().optional().describe("ID do responsável"),
-  },
-  async ({ status, filter_id, pipeline_id, stage_id, user_id }) => {
-    let path = `/deals/summary?status=${status}`;
-    if (filter_id) path += `&filter_id=${filter_id}`;
-    if (pipeline_id) path += `&pipeline_id=${pipeline_id}`;
-    if (stage_id) path += `&stage_id=${stage_id}`;
-    if (user_id) path += `&user_id=${user_id}`;
-    const data = await pipedriveRequest(path);
-    const summary = {
-      total_valor: data.data?.total_value,
-      total_formatado: data.data?.total_currency_converted_value_formatted,
-      quantidade: data.data?.total_count,
-      valor_medio_ponderado: data.data?.total_weighted_value,
-      por_moeda: data.data?.values_total,
-    };
-    return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
-  }
-);
-
-server.tool(
-  "list_deal_history",
-  "Lista o histórico de alterações de um negócio (mudanças de campos, etapa, status).",
-  {
-    deal_id: z.number().describe("ID do negócio"),
-    limit: z.number().optional().default(100).describe("Quantidade máxima de resultados (máx 500)"),
-    start: z.number().optional().default(0).describe("Offset para paginação"),
-  },
-  async ({ deal_id, limit, start }) => {
-    const effectiveLimit = Math.min(limit, 500);
-    const data = await pipedriveRequest(`/deals/${deal_id}/flow?limit=${effectiveLimit}&start=${start}`);
-    const history = (data.data || []).map((item) => ({
-      acao: item.object,
-      timestamp: item.timestamp,
-      dados: item.data,
-    }));
-    const pagination = data.additional_data?.pagination || {};
-    const result = {
-      dados: history,
-      paginacao: {
-        inicio: pagination.start || start,
-        total_nesta_pagina: history.length,
-        mais_itens: pagination.more_items_in_collection || false,
-        proximo_inicio: pagination.next_start || null,
-      },
-    };
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
 
@@ -887,38 +868,6 @@ server.tool(
 );
 
 // ─── CONTATOS (PESSOAS) ───────────────────────────────────────────────────────
-
-server.tool(
-  "list_persons",
-  "Lista contatos do Pipedrive.",
-  {
-    limit: z.number().optional().default(100).describe("Quantidade máxima de resultados (máx 500)"),
-    start: z.number().optional().default(0).describe("Offset para paginação"),
-  },
-  async ({ limit, start }) => {
-    const effectiveLimit = Math.min(limit, 500);
-    const data = await pipedriveRequest(`/persons?limit=${effectiveLimit}&start=${start}`);
-    const persons = (data.data || []).map((p) => ({
-      id: p.id,
-      nome: p.name,
-      email: p.email?.[0]?.value,
-      telefone: p.phone?.[0]?.value,
-      empresa: p.org_name,
-      negocios_abertos: p.open_deals_count,
-    }));
-    const pagination = data.additional_data?.pagination || {};
-    const result = {
-      dados: persons,
-      paginacao: {
-        inicio: pagination.start || start,
-        total_nesta_pagina: persons.length,
-        mais_itens: pagination.more_items_in_collection || false,
-        proximo_inicio: pagination.next_start || null,
-      },
-    };
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  }
-);
 
 server.tool(
   "search_persons",
@@ -1237,7 +1186,7 @@ server.tool(
     done: z.boolean().optional().default(false).describe("Listar atividades concluídas (false = pendentes)"),
     limit: z.number().optional().default(100).describe("Quantidade máxima de resultados por página (máx 500). Ignorado quando start_date/end_date são fornecidos (busca todas as páginas)."),
     start: z.number().optional().default(0).describe("Offset para paginação"),
-    user_id: z.number().optional().describe("Filtrar por usuário (ID). Use list_users para ver IDs disponíveis."),
+    user_id: z.number().optional().describe("Filtrar por usuário (ID)"),
     type: z.string().optional().describe("Filtrar por tipo de atividade. Aceita key da API, nome ou alias."),
     start_date: z.string().optional().describe("Data inicial do filtro por due_date (YYYY-MM-DD). Filtra no lado do cliente após buscar todas as páginas."),
     end_date: z.string().optional().describe("Data final do filtro por due_date (YYYY-MM-DD). Filtra no lado do cliente após buscar todas as páginas."),
@@ -1390,38 +1339,17 @@ server.tool(
 );
 
 server.tool(
-  "list_activity_types",
-  "Lista todos os tipos de atividade disponíveis (nativos e personalizados), incluindo aliases e duração padrão configurados via sync_activity_types.",
-  {},
-  async () => {
-    await ensureActivityTypesLoaded();
-    // Usa dados em memória (ACTIVITY_TYPES) — evita chamada extra à API
-    const types = Object.entries(ACTIVITY_TYPES)
-      .filter(([_, t]) => t.active)
-      .map(([key, t]) => ({
-        key,
-        nome: t.name,
-        aliases: t.aliases || [],
-        duracao_padrao_min: t.default_duration || null,
-        personalizado: t.is_custom || false,
-        ativo: true,
-      }));
-    return { content: [{ type: "text", text: JSON.stringify(types, null, 2) }] };
-  }
-);
-
-server.tool(
   "create_activity",
-  "Cria uma nova atividade/tarefa no Pipedrive. Aceita key da API, nome ou alias como tipo. Use list_activity_types para ver tipos disponíveis. IMPORTANTE: Se deal_id ou person_id for informado, o MCP verifica se já existe QUALQUER atividade pendente antes de criar.",
+  `Cria uma nova atividade/tarefa no Pipedrive. IMPORTANTE: Se deal_id ou person_id for informado, o MCP verifica se já existe QUALQUER atividade pendente antes de criar.${ACTIVITY_TYPES_REF}${USERS_REF}`,
   {
     subject: z.string().describe("Assunto da atividade"),
-    type: z.string().describe("Tipo da atividade. Aceita key da API, nome ou alias. Use list_activity_types para referência."),
+    type: z.string().describe("Tipo da atividade. Aceita key da API, nome ou alias."),
     due_date: z.string().optional().describe("Data de vencimento (YYYY-MM-DD). Opcional para tarefas sem prazo definido."),
     due_time: z.string().optional().describe("Hora de vencimento (HH:MM)"),
     duration: z.number().optional().describe("Duração em minutos. Se omitido, usa duração padrão do tipo (se configurada)."),
     deal_id: z.number().optional().describe("ID do negócio relacionado. SEMPRE informar quando a atividade pertence a um deal — sem isso a atividade fica órfã e não aparece no card do Pipedrive."),
     person_id: z.number().optional().describe("ID do contato relacionado"),
-    user_id: z.number().optional().describe("ID do usuário responsável (use list_users para ver IDs)"),
+    user_id: z.number().optional().describe("ID do usuário responsável"),
     note: z.string().optional().describe("Nota/observação"),
     force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar atividade pendente. Use SOMENTE após confirmação explícita do usuário."),
   },
@@ -1481,7 +1409,7 @@ server.tool(
 
 server.tool(
   "update_activity",
-  "Atualiza uma atividade: marcar como feita, reagendar, mudar responsável ou tipo. Aceita key, nome ou alias como tipo.",
+  `Atualiza uma atividade: marcar como feita, reagendar, mudar responsável ou tipo. Aceita key, nome ou alias como tipo.${ACTIVITY_TYPES_REF}${USERS_REF}`,
   {
     activity_id: z.number().describe("ID da atividade"),
     done: z.boolean().optional().describe("Marcar como concluída (true) ou pendente (false)"),
@@ -1518,57 +1446,6 @@ server.tool(
     if (type) actions.push(`tipo alterado para ${type}`);
     if (subject) actions.push("assunto alterado");
     return { content: [{ type: "text", text: `Atividade ${activity_id} ${actions.join(", ") || "atualizada"}.` }] };
-  }
-);
-
-// ─── PIPELINE ─────────────────────────────────────────────────────────────────
-
-server.tool(
-  "list_pipelines",
-  "Lista todos os pipelines do Pipedrive.",
-  {},
-  async () => {
-    const data = await pipedriveRequest("/pipelines");
-    const pipelines = (data.data || []).map((p) => ({
-      id: p.id,
-      nome: p.name,
-      ativo: p.active,
-    }));
-    return { content: [{ type: "text", text: JSON.stringify(pipelines, null, 2) }] };
-  }
-);
-
-server.tool(
-  "list_stages",
-  "Lista as etapas de um pipeline.",
-  { pipeline_id: z.number().describe("ID do pipeline") },
-  async ({ pipeline_id }) => {
-    const data = await pipedriveRequest(`/stages?pipeline_id=${pipeline_id}`);
-    const stages = (data.data || []).map((s) => ({
-      id: s.id,
-      nome: s.name,
-      ordem: s.order_nr,
-      pipeline_id: s.pipeline_id,
-    }));
-    return { content: [{ type: "text", text: JSON.stringify(stages, null, 2) }] };
-  }
-);
-
-// ─── USUÁRIOS ─────────────────────────────────────────────────────────────────
-
-server.tool(
-  "list_users",
-  "Lista os usuários/membros da equipe do Pipedrive.",
-  {},
-  async () => {
-    const data = await pipedriveRequest("/users");
-    const users = (data.data || []).map((u) => ({
-      id: u.id,
-      nome: u.name,
-      email: u.email,
-      ativo: u.active_flag,
-    }));
-    return { content: [{ type: "text", text: JSON.stringify(users, null, 2) }] };
   }
 );
 
@@ -1630,25 +1507,8 @@ server.tool(
 // ─── CAMPOS PERSONALIZADOS ────────────────────────────────────────────────────
 
 server.tool(
-  "list_deal_fields",
-  "Lista todos os campos personalizados disponíveis para negócios, incluindo as opções válidas para campos enum/set.",
-  {},
-  async () => {
-    if (Object.keys(DEAL_CUSTOM_FIELDS).length === 0) {
-      return { content: [{ type: "text", text: "Nenhum campo personalizado carregado. Execute sync_fields primeiro para sincronizar os campos da sua conta do Pipedrive." }] };
-    }
-    const fields = Object.entries(DEAL_CUSTOM_FIELDS).map(([name, f]) => {
-      const entry = { nome: name, tipo: f.type };
-      if (f.options) entry.opcoes = Object.keys(f.options);
-      return entry;
-    });
-    return { content: [{ type: "text", text: JSON.stringify(fields, null, 2) }] };
-  }
-);
-
-server.tool(
   "update_deal_fields",
-  "Atualiza campos personalizados de um negócio. Passe um JSON com o nome do campo e o valor. Para campos enum, use o texto exato da opção. Para set (múltipla escolha), separe por vírgula. Use list_deal_fields para ver campos e opções disponíveis. IMPORTANTE: Se um campo já tiver valor preenchido, a ferramenta NÃO vai sobrescrever — vai retornar os conflitos para você perguntar ao usuário. Use force=true SOMENTE após confirmação explícita do usuário.",
+  "Atualiza campos personalizados de um negócio. Passe um JSON com o nome do campo e o valor. Para campos enum, use o texto exato da opção. Para set (múltipla escolha), separe por vírgula. IMPORTANTE: Se um campo já tiver valor preenchido, a ferramenta NÃO vai sobrescrever — vai retornar os conflitos para você perguntar ao usuário. Use force=true SOMENTE após confirmação explícita do usuário.",
   {
     deal_id: z.number().describe("ID do negócio"),
     custom_fields: z.string().describe('JSON com os campos a atualizar. Ex: {"Segmento": "Jurídico", "CRM atual": "Pipedrive", "Dores": "Falta de organização"}'),
@@ -1722,389 +1582,154 @@ server.tool(
   }
 );
 
-// ─── ONBOARDING ──────────────────────────────────────────────────────────────
+// ─── SINCRONIZAÇÃO ────────────────────────────────────────────────────────────
 
-server.tool(
-  "onboarding",
-  "Guia de configuração inicial do Pipedrive MCP. Execute após instalar o MCP pela primeira vez. Retorna o passo atual do onboarding e instruções do que fazer a seguir.",
-  {},
-  async () => {
-    const fieldsLoaded = Object.keys(DEAL_CUSTOM_FIELDS).length > 0;
-    const typesLoaded = Object.keys(ACTIVITY_TYPES).length > 0;
-    const personFieldsLoaded = Object.keys(PERSON_CUSTOM_FIELDS).length > 0;
+// Função interna: monta e salva config.js unificado
+function saveConfig(config) {
+  const lines = [
+    "// Configuração unificada do Pipedrive MCP — gerada por sync_all",
+    `// Sincronizado em ${config.synced_at}`,
+    "// Distribuir este arquivo para funcionários que não têm permissão de sync",
+    "",
+    "export const CONFIG = " + JSON.stringify(config, null, 2) + ";",
+    "",
+  ];
+  fs.writeFileSync(CONFIG_PATH, lines.join("\n"), "utf-8");
+}
 
-    if (!fieldsLoaded || !typesLoaded || !personFieldsLoaded) {
-      // PASSO 1: Sincronizações pendentes
-      const pending = [];
-      if (!fieldsLoaded) pending.push(`${pending.length + 1}. sync_fields — mapeia campos personalizados de negócios`);
-      if (!personFieldsLoaded) pending.push(`${pending.length + 1}. sync_person_fields — mapeia campos personalizados de contatos`);
-      if (!typesLoaded) pending.push(`${pending.length + 1}. sync_activity_types — mapeia tipos de atividade (nomes, aliases, durações)`);
-      const msg = [
-        "=== ONBOARDING — Pipedrive MCP ===",
-        "",
-        "Bem-vindo! Este MCP permite que o Claude interaja diretamente com o seu Pipedrive.",
-        "",
-        "PASSO 1 DE 3 — Sincronizar dados da conta",
-        "",
-        "Execute as ferramentas de sincronização pendentes:",
-        ...pending,
-        "",
-        'Diga ao Claude: "Execute sync_fields, sync_person_fields e sync_activity_types"',
-        "",
-        "Após sincronizar, execute onboarding novamente para o próximo passo.",
-      ];
-      return { content: [{ type: "text", text: msg.join("\n") }] };
-    }
-
-    // PASSO 2: Campos sincronizados — mostrar campos e pedir configuração
-    const fieldsList = Object.entries(DEAL_CUSTOM_FIELDS).map(([name, f]) => {
-      let desc = `  - ${name} (${f.type})`;
-      if (f.options) {
-        const opts = Object.keys(f.options);
-        desc += `\n    Opções: ${opts.join(", ")}`;
-      }
-      return desc;
-    });
-
-    // Buscar pipelines e etapas para contexto
-    let pipelineInfo = "";
-    try {
-      const pipData = await pipedriveRequest("/pipelines");
-      const pipelines = pipData.data || [];
-      for (const p of pipelines) {
-        const stData = await pipedriveRequest(`/stages?pipeline_id=${p.id}`);
-        const stages = (stData.data || []).map((s) => s.name);
-        pipelineInfo += `\n  Pipeline "${p.name}" (ID: ${p.id}):\n    Etapas: ${stages.join(" → ")}`;
-      }
-    } catch {
-      pipelineInfo = "\n  (Não foi possível carregar pipelines)";
-    }
-
-    // Tipos de atividade — usa dados do config carregado
-    let activityInfo = "";
-    if (Object.keys(ACTIVITY_TYPES).length > 0) {
-      activityInfo = Object.entries(ACTIVITY_TYPES)
-        .filter(([_, t]) => t.active)
-        .map(([key, t]) => `${t.name} (${key})` + (t.default_duration ? ` [${t.default_duration}min]` : ""))
-        .join(", ");
-    } else {
-      try {
-        const actData = await pipedriveRequest("/activityTypes");
-        activityInfo = (actData.data || []).map((t) => `${t.name} (${t.key_string})`).join(", ");
-      } catch {
-        activityInfo = "(Não foi possível carregar tipos de atividade)";
-      }
-    }
-
-    const msg = [
-      "=== ONBOARDING — Pipedrive MCP ===",
-      "",
-      "PASSO 2 DE 3 — Configurar regras de negócio",
-      "",
-      `Campos personalizados sincronizados: ${Object.keys(DEAL_CUSTOM_FIELDS).length} campos`,
-      "",
-      "--- Seus campos personalizados ---",
-      ...fieldsList,
-      "",
-      "--- Seus pipelines e etapas ---",
-      pipelineInfo,
-      "",
-      "--- Tipos de atividade disponíveis ---",
-      activityInfo,
-      "",
-      "=== O QUE FAZER AGORA ===",
-      "",
-      "Para que o Claude saiba operar seu CRM corretamente, você precisa explicar suas regras de negócio.",
-      "Responda as perguntas abaixo (pode ser em texto livre, o Claude vai organizar):",
-      "",
-      "1. PIPELINE: Quais são os critérios para mover um deal de uma etapa para outra?",
-      "   Ex: 'Para mover para Diagnóstico agendado, precisa ter reunião marcada no calendário'",
-      "",
-      "2. CAMPOS OBRIGATÓRIOS: Quais campos devem estar preenchidos em cada etapa?",
-      "   Ex: 'Até a etapa 3, precisa ter Segmento, Origem e Volume de leads preenchidos'",
-      "",
-      "3. MOTIVOS DE PERDA: Quais motivos de perda vocês usam? Quais são reversíveis?",
-      "   Ex: 'Parou de responder (reversível), Contratou concorrente (difícil)'",
-      "",
-      "4. PRODUTOS/SERVIÇOS: Quais são seus produtos, preços e regras de desconto?",
-      "   Ex: 'Plano Gold R$1.497/mês, setup R$6.000, desconto máximo 50% no setup se anual'",
-      "",
-      "5. REGRAS ESPECIAIS: Algo específico do seu processo?",
-      "   Ex: 'Todo deal deve ter próxima atividade agendada', '3 no-shows = nurture'",
-      "",
-      "Após responder, o Claude vai gerar o arquivo CLAUDE.md com suas regras.",
-      "Salve esse arquivo como memória/contexto no Cloud Coworking ou no seu projeto.",
-      "",
-      "Quando terminar, execute onboarding novamente para o passo final.",
-    ];
-    return { content: [{ type: "text", text: msg.join("\n") }] };
+// Função interna: carrega config existente (para preservar aliases de activity_types)
+async function loadExistingConfig() {
+  try {
+    const mod = await import(new URL("./config.js", import.meta.url).href + "?t=" + Date.now());
+    return mod.CONFIG || {};
+  } catch (_) {
+    return {};
   }
-);
-
-// ─── SINCRONIZAÇÃO DE CAMPOS ─────────────────────────────────────────────────
+}
 
 server.tool(
-  "sync_fields",
-  "Sincroniza campos personalizados do Pipedrive. Execute após a primeira instalação ou quando adicionar/alterar campos no Pipedrive. Gera o arquivo fields.js com o mapeamento da sua conta.",
+  "sync_all",
+  "Sincroniza TUDO do Pipedrive em um único config.js: campos de deals, campos de contatos, tipos de atividade, pipelines, etapas, usuários e domínio. Execute após instalar o MCP pela primeira vez ou quando alterar configurações no Pipedrive. O config.js gerado pode ser distribuído para funcionários.",
   {},
   async () => {
     try {
-      // 1. Buscar todos os dealFields da API
-      const data = await pipedriveRequest("/dealFields?limit=500");
-      const allFields = data.data || [];
+      const existing = await loadExistingConfig();
+      const summary = [];
+      const config = { synced_at: new Date().toISOString().split("T")[0] };
 
-      // 2. Filtrar campos customizados (key é hash hex de 40 chars)
-      const customFields = allFields.filter((f) => /^[a-f0-9]{40}$/.test(f.key));
-
-      if (customFields.length === 0) {
-        return { content: [{ type: "text", text: "Nenhum campo personalizado encontrado nesta conta do Pipedrive." }] };
-      }
-
-      // 3. Montar DEAL_CUSTOM_FIELDS
-      const mapping = {};
-      let enumCount = 0;
-      let setCount = 0;
-      let textCount = 0;
-
-      for (const field of customFields) {
-        const entry = { key: field.key, type: field.field_type };
-
-        if ((field.field_type === "enum" || field.field_type === "set") && field.options) {
-          entry.options = {};
-          for (const opt of field.options) {
-            entry.options[opt.label] = opt.id;
-          }
-          if (field.field_type === "enum") enumCount++;
-          else setCount++;
-        } else {
-          textCount++;
-        }
-
-        mapping[field.name] = entry;
-      }
-
-      // 4. Salvar em fields.js (só DEAL_CUSTOM_FIELDS — mapas reversos são reconstruídos em memória)
-      const lines = [
-        "// Mapeamento dos campos personalizados de negócios do Pipedrive",
-        `// Sincronizado automaticamente em ${new Date().toISOString().split("T")[0]}`,
-        "// Para enum/set: options mapeia label → id",
-        "",
-        "export const DEAL_CUSTOM_FIELDS = " + JSON.stringify(mapping, null, 2) + ";",
-        "",
-      ];
-
-      fs.writeFileSync(FIELDS_PATH, lines.join("\n"), "utf-8");
-
-      // 5. Atualizar memória imediatamente (sem reiniciar)
-      DEAL_CUSTOM_FIELDS = mapping;
-      rebuildReverseMaps();
-      await loadStagePipelineCache();
-
-      // 6. Retornar resumo
-      const summary = [
-        `Campos personalizados sincronizados!`,
-        ``,
-        `Total: ${customFields.length} campos`,
-        `  - ${enumCount} enum (seleção única)`,
-        `  - ${setCount} set (múltipla escolha)`,
-        `  - ${textCount} outros (text, double, etc.)`,
-        ``,
-        `Campos carregados na memória — prontos para uso imediato.`,
-      ];
-
-      return { content: [{ type: "text", text: summary.join("\n") }] };
-    } catch (err) {
-      return {
-        content: [{
-          type: "text",
-          text: `Erro ao sincronizar campos: ${err.message}\n\nVerifique:\n1. O token da API (PIPEDRIVE_API_KEY) é válido?\n2. O token tem permissão para acessar campos personalizados?`,
-        }],
-      };
-    }
-  }
-);
-
-server.tool(
-  "sync_person_fields",
-  "Sincroniza campos personalizados de CONTATOS do Pipedrive. Execute após a primeira instalação ou quando adicionar/alterar campos de pessoa no Pipedrive. Gera person_fields.js.",
-  {},
-  async () => {
-    try {
-      const data = await pipedriveRequest("/personFields?limit=500");
-      const allFields = data.data || [];
-      const customFields = allFields.filter((f) => /^[a-f0-9]{40}$/.test(f.key));
-
-      if (customFields.length === 0) {
-        return { content: [{ type: "text", text: "Nenhum campo personalizado de contato encontrado nesta conta do Pipedrive." }] };
-      }
-
-      const mapping = {};
-      let enumCount = 0;
-      let setCount = 0;
-      let textCount = 0;
-
-      for (const field of customFields) {
+      // 1. Campos personalizados de DEALS
+      const dealFieldsData = await pipedriveRequest("/dealFields?limit=500");
+      const dealCustom = (dealFieldsData.data || []).filter((f) => /^[a-f0-9]{40}$/.test(f.key));
+      const dealMapping = {};
+      let dEnum = 0, dSet = 0, dOther = 0;
+      for (const field of dealCustom) {
         const entry = { key: field.key, type: field.field_type };
         if ((field.field_type === "enum" || field.field_type === "set") && field.options) {
           entry.options = {};
-          for (const opt of field.options) {
-            entry.options[opt.label] = opt.id;
-          }
-          if (field.field_type === "enum") enumCount++;
-          else setCount++;
-        } else {
-          textCount++;
-        }
-        mapping[field.name] = entry;
+          for (const opt of field.options) entry.options[opt.label] = opt.id;
+          if (field.field_type === "enum") dEnum++; else dSet++;
+        } else { dOther++; }
+        dealMapping[field.name] = entry;
       }
+      config.deal_custom_fields = dealMapping;
+      summary.push(`Campos de deals: ${dealCustom.length} (${dEnum} enum, ${dSet} set, ${dOther} outros)`);
 
-      const lines = [
-        "// Mapeamento dos campos personalizados de contatos do Pipedrive",
-        `// Sincronizado automaticamente em ${new Date().toISOString().split("T")[0]}`,
-        "// Para enum/set: options mapeia label → id",
-        "",
-        "export const PERSON_CUSTOM_FIELDS = " + JSON.stringify(mapping, null, 2) + ";",
-        "",
-      ];
-
-      fs.writeFileSync(PERSON_FIELDS_PATH, lines.join("\n"), "utf-8");
-
-      PERSON_CUSTOM_FIELDS = mapping;
-      rebuildPersonReverseMaps();
-
-      const summary = [
-        `Campos personalizados de contatos sincronizados!`,
-        ``,
-        `Total: ${customFields.length} campos`,
-        `  - ${enumCount} enum (seleção única)`,
-        `  - ${setCount} set (múltipla escolha)`,
-        `  - ${textCount} outros (text, double, etc.)`,
-        ``,
-        `Campos carregados na memória — prontos para uso imediato.`,
-        ``,
-        `Agora create_person e update_person aceitam custom_fields com estes campos.`,
-      ];
-
-      return { content: [{ type: "text", text: summary.join("\n") }] };
-    } catch (err) {
-      return {
-        content: [{
-          type: "text",
-          text: `Erro ao sincronizar campos de contato: ${err.message}\n\nVerifique:\n1. O token da API (PIPEDRIVE_API_KEY) é válido?\n2. O token tem permissão para acessar campos de contato?`,
-        }],
-      };
-    }
-  }
-);
-
-server.tool(
-  "sync_activity_types",
-  "Sincroniza tipos de atividade do Pipedrive. Gera activity_types.js com nomes, aliases e durações padrão. Preserva aliases e durações configurados pelo usuário no re-sync.",
-  {},
-  async () => {
-    try {
-      // 1. Buscar tipos da API
-      const data = await pipedriveRequest("/activityTypes");
-      const apiTypes = data.data || [];
-
-      if (apiTypes.length === 0) {
-        return { content: [{ type: "text", text: "Nenhum tipo de atividade encontrado nesta conta do Pipedrive." }] };
+      // 2. Campos personalizados de CONTATOS
+      const personFieldsData = await pipedriveRequest("/personFields?limit=500");
+      const personCustom = (personFieldsData.data || []).filter((f) => /^[a-f0-9]{40}$/.test(f.key));
+      const personMapping = {};
+      let pEnum = 0, pSet = 0, pOther = 0;
+      for (const field of personCustom) {
+        const entry = { key: field.key, type: field.field_type };
+        if ((field.field_type === "enum" || field.field_type === "set") && field.options) {
+          entry.options = {};
+          for (const opt of field.options) entry.options[opt.label] = opt.id;
+          if (field.field_type === "enum") pEnum++; else pSet++;
+        } else { pOther++; }
+        personMapping[field.name] = entry;
       }
+      config.person_custom_fields = personMapping;
+      summary.push(`Campos de contatos: ${personCustom.length} (${pEnum} enum, ${pSet} set, ${pOther} outros)`);
 
-      // 2. Carregar config existente para merge (preservar aliases e durations do usuário)
-      let existing = {};
-      try {
-        const mod = await import(new URL("./activity_types.js", import.meta.url).href + "?t=" + Date.now());
-        existing = mod.ACTIVITY_TYPES || {};
-      } catch (_) {
-        // Primeiro sync — sem arquivo existente
-      }
-
-      // 3. Merge: API fornece name/is_custom/active, usuário preserva aliases/default_duration
-      const merged = {};
-      let newCount = 0;
-      let updatedCount = 0;
-
-      for (const t of apiTypes) {
+      // 3. Tipos de atividade (preserva aliases/durations do config anterior)
+      const actData = await pipedriveRequest("/activityTypes");
+      const existingTypes = existing.activity_types || {};
+      const mergedTypes = {};
+      for (const t of (actData.data || [])) {
         const key = t.key_string;
-        const prev = existing[key];
+        const prev = existingTypes[key];
+        mergedTypes[key] = {
+          name: t.name,
+          aliases: prev?.aliases || [t.name.toLowerCase()],
+          default_duration: prev?.default_duration || null,
+          is_custom: !!t.is_custom_flag,
+          active: !!t.active_flag,
+        };
+      }
+      // Tipos removidos da API → marcar inactive
+      for (const [key, prev] of Object.entries(existingTypes)) {
+        if (!mergedTypes[key]) mergedTypes[key] = { ...prev, active: false };
+      }
+      config.activity_types = mergedTypes;
+      const activeCount = Object.values(mergedTypes).filter(t => t.active).length;
+      summary.push(`Tipos de atividade: ${activeCount} ativos`);
 
-        if (prev) {
-          // Tipo existente — preservar aliases e duration do usuário, atualizar da API
-          merged[key] = {
-            name: t.name,
-            aliases: prev.aliases || [t.name.toLowerCase()],
-            default_duration: prev.default_duration || null,
-            is_custom: !!t.is_custom_flag,
-            active: !!t.active_flag,
-          };
-          updatedCount++;
-        } else {
-          // Tipo novo — criar com name como alias
-          merged[key] = {
-            name: t.name,
-            aliases: [t.name.toLowerCase()],
-            default_duration: null,
-            is_custom: !!t.is_custom_flag,
-            active: !!t.active_flag,
-          };
-          newCount++;
+      // 4. Pipelines + Etapas
+      const pipData = await pipedriveRequest("/pipelines");
+      const pipelines = [];
+      for (const p of (pipData.data || [])) {
+        const stData = await pipedriveRequest(`/stages?pipeline_id=${p.id}`);
+        const stages = (stData.data || []).map(s => ({ id: s.id, name: s.name, order: s.order_nr }));
+        pipelines.push({ id: p.id, name: p.name, stages });
+      }
+      config.pipelines = pipelines;
+      summary.push(`Pipelines: ${pipelines.length} (${pipelines.reduce((sum, p) => sum + p.stages.length, 0)} etapas)`);
+
+      // 5. Usuários
+      const userData = await pipedriveRequest("/users?limit=500");
+      config.users = (userData.data || []).filter(u => u.active_flag).map(u => ({ id: u.id, name: u.name }));
+      summary.push(`Usuários: ${config.users.length} ativos`);
+
+      // 6. Domínio da empresa
+      const me = await pipedriveRequest("/users/me");
+      config.company_domain = me.data?.company_domain || "app";
+
+      // 7. Salvar config.js
+      saveConfig(config);
+
+      // 8. Atualizar memória imediatamente
+      DEAL_CUSTOM_FIELDS = dealMapping; rebuildReverseMaps();
+      PERSON_CUSTOM_FIELDS = personMapping; rebuildPersonReverseMaps();
+      ACTIVITY_TYPES = mergedTypes; rebuildTypeLookup();
+      PIPELINE_MAP = {}; STAGE_MAP = {}; STAGES_DATA = [];
+      for (const p of pipelines) {
+        PIPELINE_MAP[p.id] = p.name;
+        for (const s of p.stages) {
+          STAGE_MAP[s.id] = s.name;
+          STAGES_DATA.push({ id: s.id, name: s.name, pipeline_id: p.id, order: s.order });
         }
       }
+      ACTIVE_USERS = config.users;
+      COMPANY_DOMAIN = config.company_domain;
 
-      // 4. Tipos que existiam no config mas foram removidos da API → marcar inactive
-      let removedCount = 0;
-      for (const [key, prev] of Object.entries(existing)) {
-        if (!merged[key]) {
-          merged[key] = { ...prev, active: false };
-          removedCount++;
-        }
-      }
-
-      // 5. Salvar activity_types.js
-      const lines = [
-        "// Tipos de atividade do Pipedrive — configurável por empresa",
-        `// Sincronizado automaticamente em ${new Date().toISOString().split("T")[0]}`,
-        "// aliases e default_duration são preservados no re-sync",
-        "// Edite aliases e durações manualmente ou via agente conforme necessidade",
-        "",
-        "export const ACTIVITY_TYPES = " + JSON.stringify(merged, null, 2) + ";",
-        "",
-      ];
-
-      fs.writeFileSync(ACTIVITY_TYPES_PATH, lines.join("\n"), "utf-8");
-
-      // 6. Atualizar memória imediatamente
-      ACTIVITY_TYPES = merged;
-      rebuildTypeLookup();
-
-      // 7. Retornar resumo
-      const activeTypes = Object.entries(merged)
-        .filter(([_, t]) => t.active)
-        .map(([key, t]) => `  - ${t.name} (${key})` + (t.default_duration ? ` [${t.default_duration}min]` : ""))
-        .join("\n");
-
-      const summary = [
-        `Tipos de atividade sincronizados!`,
-        ``,
-        `Total: ${Object.keys(merged).length} tipos`,
-        `  - ${newCount} novos`,
-        `  - ${updatedCount} atualizados (aliases e durações preservados)`,
-        removedCount > 0 ? `  - ${removedCount} desativados (removidos da API)` : null,
-        ``,
-        `Tipos ativos:`,
-        activeTypes,
-        ``,
-        `Para configurar aliases e durações padrão, edite activity_types.js`,
-        `ou peça ao agente: "Configure o tipo call com alias ligação e duração 15min"`,
-      ].filter(Boolean);
-
-      return { content: [{ type: "text", text: summary.join("\n") }] };
+      return {
+        content: [{
+          type: "text",
+          text: [
+            "config.js sincronizado!",
+            "",
+            ...summary,
+            "",
+            "Tudo carregado na memória — pronto para uso imediato.",
+            "Distribua config.js para funcionários que não têm permissão de sync.",
+          ].join("\n"),
+        }],
+      };
     } catch (err) {
       return {
         content: [{
           type: "text",
-          text: `Erro ao sincronizar tipos de atividade: ${err.message}\n\nVerifique:\n1. O token da API (PIPEDRIVE_API_KEY) é válido?\n2. O token tem permissão para acessar tipos de atividade?`,
+          text: `Erro ao sincronizar: ${err.message}\n\nVerifique:\n1. O token da API (PIPEDRIVE_API_KEY) é válido?\n2. O token tem permissão de admin?`,
         }],
       };
     }
@@ -2112,17 +1737,6 @@ server.tool(
 );
 
 // ─── START ────────────────────────────────────────────────────────────────────
-
-// Carregar cache de etapas/pipelines para tradução de IDs → nomes
-await loadStagePipelineCache();
-
-// Carregar domínio da empresa para links dinâmicos
-try {
-  const me = await pipedriveRequest("/users/me");
-  if (me.data?.company_domain) COMPANY_DOMAIN = me.data.company_domain;
-} catch (err) {
-  console.error("[pipedrive-mcp] Aviso: não foi possível carregar domínio da empresa:", err.message);
-}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
