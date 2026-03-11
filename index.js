@@ -678,6 +678,232 @@ server.tool(
   }
 );
 
+// ─── CREATE DEAL FULL ────────────────────────────────────────────────────────
+// Tool unificado: cria pessoa + org + deal + atividades em uma única chamada.
+// Busca duplicatas antes de criar. Propaga origem para pessoa (1x) e deal.
+
+server.tool(
+  "create_deal_full",
+  "Cria deal completo em uma chamada: pessoa + organização + deal + atividades. Busca duplicatas automaticamente. Propaga origem para pessoa (1x, nunca muda) e deal. Aceita nome ou ID para pipeline, etapa e responsável.",
+  {
+    // ── Pessoa ──
+    person_name: z.string().describe("Nome completo do contato"),
+    phone: z.string().describe("Telefone com DDI. Ex: 5511999990000"),
+    email: z.string().optional().describe("Email do contato"),
+    // ── Organização ──
+    org_name: z.string().optional().describe("Nome da empresa/organização"),
+    // ── Deal ──
+    title: z.string().optional().describe("Título do deal. Se omitido, usa person_name."),
+    value: z.number().optional().describe("Valor do negócio"),
+    pipeline_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID do pipeline. Ex: 'Educacional', 6"),
+    stage_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID da etapa. Ex: 'Contato Realizado', 53"),
+    user_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID do responsável. Ex: 'Eric Luciano'"),
+    // ── Origem (propagada para pessoa e deal) ──
+    origem: z.string().optional().describe("Origem da oportunidade. Ex: 'INDIC | Geral', 'ORG | Palestra Eric Luciano'"),
+    detalhe_origem: z.string().optional().describe("Detalhe da origem. Ex: 'G4 Academy', 'Post sobre CRM'"),
+    // ── Custom fields extras do deal ──
+    custom_fields: z.string().optional().describe('JSON com campos personalizados extras do deal. Ex: {"Segmento": "Contabilidade"}'),
+    // ── Atividades ──
+    activities: z.string().optional().describe('JSON array de atividades. Ex: [{"subject":"WhatsApp","type":"whatsapp","due_date":"2026-03-10","done":true},{"subject":"Checkpoint","type":"task","due_date":"2026-03-11"}]'),
+  },
+  async ({ person_name, phone, email, org_name, title, value, pipeline_id, stage_id, user_id, origem, detalhe_origem, custom_fields, activities }) => {
+    const log = []; // acumula o que aconteceu pra retornar no final
+
+    // ── 1. Resolver nomes para IDs ──
+    try {
+      pipeline_id = resolvePipeline(pipeline_id);
+      stage_id = resolveStage(stage_id, pipeline_id);
+      user_id = resolveUser(user_id);
+    } catch (e) {
+      return { content: [{ type: "text", text: e.message }] };
+    }
+
+    // ── 2. Resolver origem (enum ID) ──
+    let origemDealId = undefined;
+    let origemPersonId = undefined;
+    if (origem) {
+      const dealField = DEAL_CUSTOM_FIELDS["Origem da Oportunidade"];
+      const personField = PERSON_CUSTOM_FIELDS["Origem do Contato"];
+      if (dealField?.options?.[origem]) {
+        origemDealId = dealField.options[origem];
+      } else if (dealField) {
+        // Tentar match parcial case-insensitive
+        const lower = origem.toLowerCase();
+        const match = Object.entries(dealField.options).find(([k]) => k.toLowerCase() === lower);
+        if (match) origemDealId = match[1];
+        else return { content: [{ type: "text", text: `Origem "${origem}" não encontrada.\n\nOpções:\n${Object.keys(dealField.options).join("\n")}` }] };
+      }
+      if (personField?.options?.[origem]) {
+        origemPersonId = personField.options[origem];
+      } else if (personField) {
+        const lower = origem.toLowerCase();
+        const match = Object.entries(personField.options).find(([k]) => k.toLowerCase() === lower);
+        if (match) origemPersonId = match[1];
+        // Se não encontrar na pessoa, segue sem — pode ter opções diferentes
+      }
+    }
+
+    // ── 3. Buscar/criar organização ──
+    let org_id = undefined;
+    if (org_name) {
+      try {
+        const orgSearch = await pipedriveRequest(`/organizations/search?term=${encodeURIComponent(org_name)}&limit=5`);
+        const orgMatch = (orgSearch.data?.items || []).find(
+          (i) => i.item.name.toLowerCase() === org_name.toLowerCase()
+        );
+        if (orgMatch) {
+          org_id = orgMatch.item.id;
+          log.push(`Organização já existia: "${orgMatch.item.name}" (ID ${org_id})`);
+        } else {
+          const orgBody = { name: org_name, visible_to: 3 };
+          if (user_id) orgBody.owner_id = user_id;
+          const orgData = await pipedriveRequest("/organizations", { method: "POST", body: JSON.stringify(orgBody) });
+          org_id = orgData.data.id;
+          log.push(`Organização criada: "${org_name}" (ID ${org_id})`);
+        }
+      } catch (e) {
+        log.push(`Aviso: erro ao buscar/criar organização: ${e.message}`);
+      }
+    }
+
+    // ── 4. Buscar/criar pessoa ──
+    let person_id = undefined;
+    let personIsNew = false;
+    const cleanPhone = phone.replace(/\D/g, "");
+    try {
+      const personSearch = await pipedriveRequest(`/persons/search?term=${encodeURIComponent(cleanPhone)}&fields=phone&limit=5`);
+      const personMatch = (personSearch.data?.items || []).find((i) => {
+        const phones = i.item.phones || [];
+        return phones.some((p) => p.replace(/\D/g, "").includes(cleanPhone) || cleanPhone.includes(p.replace(/\D/g, "")));
+      });
+      if (personMatch) {
+        person_id = personMatch.item.id;
+        log.push(`Pessoa já existia: "${personMatch.item.name}" (ID ${person_id})`);
+      }
+    } catch { /* continua pra criar */ }
+
+    if (!person_id) {
+      personIsNew = true;
+      const personBody = {
+        name: person_name,
+        phone: [{ value: cleanPhone, primary: true }],
+        visible_to: 3,
+      };
+      if (email) personBody.email = [{ value: email, primary: true }];
+      if (org_id) personBody.org_id = org_id;
+      // Origem do contato — só na criação (1x na vida)
+      if (origemPersonId) {
+        const personOrigemKey = PERSON_CUSTOM_FIELDS["Origem do Contato"]?.key;
+        if (personOrigemKey) personBody[personOrigemKey] = origemPersonId;
+      }
+      if (detalhe_origem) {
+        const detalheKey = PERSON_CUSTOM_FIELDS["Detalhes da origem do contato"]?.key;
+        if (detalheKey) personBody[detalheKey] = detalhe_origem;
+      }
+      try {
+        const personData = await pipedriveRequest("/persons", { method: "POST", body: JSON.stringify(personBody) });
+        person_id = personData.data.id;
+        log.push(`Pessoa criada: "${person_name}" (ID ${person_id})`);
+      } catch (e) {
+        return { content: [{ type: "text", text: `Erro ao criar pessoa: ${e.message}\n\n${log.join("\n")}` }] };
+      }
+    }
+
+    // ── 5. Verificar deal aberto existente no mesmo pipeline ──
+    try {
+      const personDeals = await pipedriveRequest(`/persons/${person_id}/deals?status=open&limit=100`);
+      const openInPipeline = (personDeals.data || []).filter(
+        (d) => !pipeline_id || d.pipeline_id == pipeline_id
+      );
+      if (openInPipeline.length > 0) {
+        const lines = openInPipeline.map((d) => {
+          const valor = d.value ? ` | Valor: R$${d.value.toLocaleString("pt-BR")}` : "";
+          return `- "${d.title}" (ID: ${d.id}) | Etapa: ${STAGE_MAP[d.stage_id] || d.stage_id} | Pipeline: ${PIPELINE_MAP[d.pipeline_id] || d.pipeline_id}${valor}\n  https://${COMPANY_DOMAIN}.pipedrive.com/deal/${d.id}`;
+        });
+        return {
+          content: [{
+            type: "text",
+            text: `${log.join("\n")}\n\n⚠ DEAL ABERTO JÁ EXISTE neste pipeline:\n\n${lines.join("\n\n")}\n\nNenhum deal novo criado. Use create_deal com force: true se realmente necessário.`,
+          }],
+        };
+      }
+    } catch { /* ignora — continua */ }
+
+    // ── 6. Criar deal ──
+    const dealBody = { title: title || person_name, person_id, currency: "BRL", visible_to: 3 };
+    if (value !== undefined) dealBody.value = value;
+    if (org_id) dealBody.org_id = org_id;
+    if (pipeline_id) dealBody.pipeline_id = pipeline_id;
+    if (stage_id) dealBody.stage_id = stage_id;
+    if (user_id) dealBody.user_id = user_id;
+    // Origem do deal
+    if (origemDealId) {
+      const dealOrigemKey = DEAL_CUSTOM_FIELDS["Origem da Oportunidade"]?.key;
+      if (dealOrigemKey) dealBody[dealOrigemKey] = origemDealId;
+    }
+    if (detalhe_origem) {
+      const detalheKey = DEAL_CUSTOM_FIELDS["Detalhes da origem da oportunidade"]?.key;
+      if (detalheKey) dealBody[detalheKey] = detalhe_origem;
+    }
+    // Custom fields extras
+    let warnings = [];
+    if (custom_fields) {
+      try {
+        const parsed = JSON.parse(custom_fields);
+        const { body: customBody, errors } = resolveCustomFields(parsed);
+        Object.assign(dealBody, customBody);
+        warnings = errors;
+      } catch {
+        warnings.push("custom_fields inválido (JSON malformado), ignorado.");
+      }
+    }
+
+    let deal_id;
+    try {
+      const dealData = await pipedriveRequest("/deals", { method: "POST", body: JSON.stringify(dealBody) });
+      deal_id = dealData.data.id;
+      log.push(`Deal criado: "${dealBody.title}" (ID ${deal_id})\nhttps://${COMPANY_DOMAIN}.pipedrive.com/deal/${deal_id}`);
+    } catch (e) {
+      return { content: [{ type: "text", text: `Erro ao criar deal: ${e.message}\n\n${log.join("\n")}` }] };
+    }
+
+    // ── 7. Criar atividades ──
+    if (activities) {
+      try {
+        await ensureActivityTypesLoaded();
+        const acts = JSON.parse(activities);
+        for (const act of acts) {
+          const actBody = {
+            subject: act.subject || act.type || "Atividade",
+            type: resolveActivityType(act.type || "task"),
+            deal_id,
+            person_id,
+          };
+          if (act.due_date) actBody.due_date = act.due_date;
+          if (act.due_time && act.due_date) actBody.due_time = localToUtc(act.due_time, act.due_date);
+          if (act.note) actBody.note = act.note.replace(/\n/g, "<br>");
+          if (act.done) actBody.done = 1;
+          // Duração: explícita > default > nenhuma
+          const dur = act.duration || ACTIVITY_TYPES[actBody.type]?.default_duration;
+          if (dur) actBody.duration = minutesToHHMM(dur);
+          try {
+            const actData = await pipedriveRequest("/activities", { method: "POST", body: JSON.stringify(actBody) });
+            const status = act.done ? "concluída" : "pendente";
+            log.push(`Atividade criada: "${actBody.subject}" ${act.due_date || ""} (${status}) — ID ${actData.data.id}`);
+          } catch (e) {
+            log.push(`Aviso: erro ao criar atividade "${actBody.subject}": ${e.message}`);
+          }
+        }
+      } catch (e) {
+        log.push(`Aviso: erro ao processar atividades: ${e.message}`);
+      }
+    }
+
+    if (warnings.length > 0) log.push(`\nAvisos:\n${warnings.join("\n")}`);
+    return { content: [{ type: "text", text: log.join("\n") }] };
+  }
+);
+
 server.tool(
   "update_deal",
   "Atualiza um negócio (status, etapa, pipeline, valor, etc.). Aceita nome ou ID para pipeline, etapa e responsável.",
