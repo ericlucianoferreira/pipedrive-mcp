@@ -90,6 +90,49 @@ function resolveActivityType(input) {
   throw new Error(`Tipo de atividade "${input}" não encontrado.\n\nTipos válidos:\n${valid}`);
 }
 
+// ─── RESOLVERS: nome → ID (usando dados do config.js) ────────────────────────
+
+function resolvePipeline(input) {
+  if (input === undefined || input === null) return undefined;
+  const asNum = Number(input);
+  if (!isNaN(asNum) && PIPELINE_MAP[asNum]) return asNum;
+  const lower = String(input).toLowerCase();
+  const exact = Object.entries(PIPELINE_MAP).find(([_, name]) => name.toLowerCase() === lower);
+  if (exact) return parseInt(exact[0]);
+  const partial = Object.entries(PIPELINE_MAP).find(([_, name]) => name.toLowerCase().includes(lower));
+  if (partial) return parseInt(partial[0]);
+  const valid = Object.entries(PIPELINE_MAP).map(([id, name]) => `  - ${name} (${id})`).join("\n");
+  throw new Error(`Pipeline "${input}" não encontrado.\n\nPipelines disponíveis:\n${valid}`);
+}
+
+function resolveStage(input, pipelineId) {
+  if (input === undefined || input === null) return undefined;
+  const asNum = Number(input);
+  if (!isNaN(asNum) && STAGES_DATA.some(s => s.id === asNum)) return asNum;
+  const lower = String(input).toLowerCase();
+  const candidates = pipelineId ? STAGES_DATA.filter(s => s.pipeline_id == pipelineId) : STAGES_DATA;
+  const exact = candidates.find(s => s.name.toLowerCase() === lower);
+  if (exact) return exact.id;
+  const partial = candidates.find(s => s.name.toLowerCase().includes(lower));
+  if (partial) return partial.id;
+  const valid = candidates.sort((a, b) => a.order - b.order).map(s => `  - ${s.name} (${s.id})`).join("\n");
+  const ctx = pipelineId ? ` no pipeline ${PIPELINE_MAP[pipelineId] || pipelineId}` : "";
+  throw new Error(`Etapa "${input}" não encontrada${ctx}.\n\nEtapas disponíveis:\n${valid}`);
+}
+
+function resolveUser(input) {
+  if (input === undefined || input === null) return undefined;
+  const asNum = Number(input);
+  if (!isNaN(asNum) && ACTIVE_USERS.some(u => u.id === asNum)) return asNum;
+  const lower = String(input).toLowerCase();
+  const exact = ACTIVE_USERS.find(u => u.name.toLowerCase() === lower);
+  if (exact) return exact.id;
+  const partial = ACTIVE_USERS.find(u => u.name.toLowerCase().includes(lower));
+  if (partial) return partial.id;
+  const valid = ACTIVE_USERS.map(u => `  - ${u.name} (${u.id})`).join("\n");
+  throw new Error(`Usuário "${input}" não encontrado.\n\nUsuários ativos:\n${valid}`);
+}
+
 function minutesToHHMM(min) {
   if (!min) return undefined;
   const hh = String(Math.floor(min / 60)).padStart(2, "0");
@@ -429,34 +472,8 @@ try {
   }
 }
 
-// Referências estáticas embutidas nas descrições dos tools
-function buildPipelineStagesRef() {
-  if (Object.keys(PIPELINE_MAP).length === 0) return "";
-  const lines = Object.entries(PIPELINE_MAP).map(([pid, pname]) => {
-    const stages = STAGES_DATA
-      .filter(s => s.pipeline_id == pid)
-      .sort((a, b) => a.order - b.order)
-      .map(s => `${s.name}(${s.id})`)
-      .join(" → ");
-    return `  ${pname}(${pid}): ${stages}`;
-  });
-  return "\nPipelines e etapas disponíveis:\n" + lines.join("\n");
-}
-
-function buildUsersRef() {
-  if (ACTIVE_USERS.length === 0) return "";
-  return "\nUsuários ativos: " + ACTIVE_USERS.map(u => `${u.name}(${u.id})`).join(", ");
-}
-
-function buildActivityTypesRef() {
-  const active = Object.entries(ACTIVITY_TYPES).filter(([_, t]) => t.active);
-  if (active.length === 0) return "";
-  return "\nTipos de atividade: " + active.map(([key, t]) => `${t.name}(${key})`).join(", ");
-}
-
-const PIPELINES_REF = buildPipelineStagesRef();
-const USERS_REF = buildUsersRef();
-const ACTIVITY_TYPES_REF = buildActivityTypesRef();
+// Referências inline removidas — resolução por nome/ID acontece dentro de cada tool via
+// resolvePipeline(), resolveStage(), resolveUser(), resolveActivityType()
 
 // ─── NEGÓCIOS ────────────────────────────────────────────────────────────────
 
@@ -582,20 +599,28 @@ server.tool(
 
 server.tool(
   "create_deal",
-  `Cria um novo negócio no Pipedrive. Aceita campos personalizados via custom_fields. IMPORTANTE: Se person_id for informado, o MCP busca automaticamente se já existe deal aberto para esse contato. Se encontrar, retorna aviso com link em vez de criar.${PIPELINES_REF}${USERS_REF}`,
+  "Cria um novo negócio no Pipedrive. Aceita nome ou ID para pipeline, etapa e responsável (resolve automaticamente via config). Se person_id for informado, verifica se já existe deal aberto. Aceita campos personalizados via custom_fields.",
   {
     title: z.string().describe("Título do negócio"),
     value: z.number().optional().describe("Valor do negócio"),
     currency: z.string().optional().default("BRL").describe("Moeda (padrão BRL)"),
     person_id: z.number().optional().describe("ID do contato"),
     org_id: z.number().optional().describe("ID da organização"),
-    pipeline_id: z.number().optional().describe("ID do pipeline"),
-    stage_id: z.number().optional().describe("ID da etapa"),
-    user_id: z.number().optional().describe("ID do responsável. Se omitido, atribui ao dono do token."),
+    pipeline_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID do pipeline. Ex: 'Educacional', 'Super SDR', 6"),
+    stage_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID da etapa. Ex: 'Apresentação Agendada', 54"),
+    user_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID do responsável. Ex: 'Eric Luciano', 17987703. Se omitido, atribui ao dono do token."),
     custom_fields: z.string().optional().describe('JSON com campos personalizados. Ex: {"Segmento": "Jurídico", "Origem da Oportunidade": "INDIC | Geral"}'),
     force: z.boolean().optional().default(false).describe("Se true, cria mesmo se existir deal aberto para o contato. Use SOMENTE após confirmação explícita do usuário."),
   },
   async ({ title, value, currency, person_id, org_id, pipeline_id, stage_id, user_id, custom_fields, force }) => {
+    // ── Resolver nomes para IDs ──
+    try {
+      pipeline_id = resolvePipeline(pipeline_id);
+      stage_id = resolveStage(stage_id, pipeline_id);
+      user_id = resolveUser(user_id);
+    } catch (e) {
+      return { content: [{ type: "text", text: e.message }] };
+    }
     // ── Guardrail: verificar deals abertos para o contato ──
     if (person_id && !force) {
       try {
@@ -655,20 +680,28 @@ server.tool(
 
 server.tool(
   "update_deal",
-  `Atualiza um negócio (status, etapa, pipeline, valor, etc.).${PIPELINES_REF}${USERS_REF}`,
+  "Atualiza um negócio (status, etapa, pipeline, valor, etc.). Aceita nome ou ID para pipeline, etapa e responsável.",
   {
     deal_id: z.number().describe("ID do negócio"),
     title: z.string().optional().describe("Novo título"),
     value: z.number().optional().describe("Novo valor"),
-    stage_id: z.number().optional().describe("Nova etapa"),
-    pipeline_id: z.number().optional().describe("Novo pipeline (mover entre pipelines)"),
+    stage_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID da nova etapa. Ex: 'Proposta enviada', 20"),
+    pipeline_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID do novo pipeline. Ex: 'SaaS', 1"),
     status: z.enum(["open", "won", "lost"]).optional().describe("Novo status"),
     lost_reason: z.enum(["Parou de responder", "Fora do orçamento", "Adiou contratação", "Mudança de prioridade", "Contratou outra empresa", "Internalizou", "Não é o que buscava", "Ferramenta incompatível / Desqualificado"]).optional().describe("Motivo da perda (obrigatório quando status=lost). Use exatamente um dos 8 motivos padronizados."),
     lost_time: z.string().optional().describe("Data/hora da perda no formato 'YYYY-MM-DD HH:MM:SS'. Permite definir data retroativa de perda."),
-    user_id: z.number().optional().describe("Novo responsável do deal (ID do usuário)"),
+    user_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID do novo responsável. Ex: 'Eric Luciano', 17987703"),
     expected_close_date: z.string().optional().describe("Data prevista de fechamento no formato YYYY-MM-DD"),
   },
   async ({ deal_id, title, value, stage_id, pipeline_id, status, lost_reason, lost_time, user_id, expected_close_date }) => {
+    // ── Resolver nomes para IDs ──
+    try {
+      pipeline_id = resolvePipeline(pipeline_id);
+      stage_id = resolveStage(stage_id, pipeline_id);
+      user_id = resolveUser(user_id);
+    } catch (e) {
+      return { content: [{ type: "text", text: e.message }] };
+    }
     const body = {};
     if (title) body.title = title;
     if (value !== undefined) body.value = value;
@@ -1131,14 +1164,16 @@ server.tool(
 
 server.tool(
   "create_organization",
-  "Cria uma nova organização/empresa no Pipedrive. IMPORTANTE: Antes de criar, o MCP busca automaticamente por organizações com nome similar. Se encontrar, retorna aviso com link em vez de criar.",
+  "Cria uma nova organização/empresa no Pipedrive. Verifica duplicatas automaticamente. Aceita nome ou ID para responsável.",
   {
     name: z.string().describe("Nome da organização"),
     address: z.string().optional().describe("Endereço da organização"),
-    owner_id: z.number().optional().describe("ID do usuário responsável"),
-    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar organização similar. Use SOMENTE após confirmação explícita do usuário."),
+    owner_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID do responsável. Ex: 'Eric Luciano'"),
+    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar organização similar."),
   },
   async ({ name, address, owner_id, force }) => {
+    // ── Resolver nome do responsável ──
+    try { owner_id = resolveUser(owner_id); } catch (e) { return { content: [{ type: "text", text: e.message }] }; }
     // ── Guardrail: buscar organizações similares antes de criar ──
     if (!force) {
       try {
@@ -1340,20 +1375,22 @@ server.tool(
 
 server.tool(
   "create_activity",
-  `Cria uma nova atividade/tarefa no Pipedrive. IMPORTANTE: Se deal_id ou person_id for informado, o MCP verifica se já existe QUALQUER atividade pendente antes de criar.${ACTIVITY_TYPES_REF}${USERS_REF}`,
+  "Cria uma nova atividade/tarefa no Pipedrive. Aceita nome ou alias para tipo e responsável (resolve automaticamente). Horários em fuso local (converte para UTC). Se deal_id ou person_id informado, verifica atividades pendentes antes de criar.",
   {
     subject: z.string().describe("Assunto da atividade"),
-    type: z.string().describe("Tipo da atividade. Aceita key da API, nome ou alias."),
-    due_date: z.string().optional().describe("Data de vencimento (YYYY-MM-DD). Opcional para tarefas sem prazo definido."),
-    due_time: z.string().optional().describe("Hora de vencimento (HH:MM)"),
-    duration: z.number().optional().describe("Duração em minutos. Se omitido, usa duração padrão do tipo (se configurada)."),
-    deal_id: z.number().optional().describe("ID do negócio relacionado. SEMPRE informar quando a atividade pertence a um deal — sem isso a atividade fica órfã e não aparece no card do Pipedrive."),
+    type: z.string().describe("Tipo da atividade. Aceita key, nome ou alias. Ex: 'whatsapp', 'Demonstração', 'call'"),
+    due_date: z.string().optional().describe("Data de vencimento (YYYY-MM-DD)"),
+    due_time: z.string().optional().describe("Hora de vencimento em horário local (HH:MM). Convertido para UTC automaticamente."),
+    duration: z.number().optional().describe("Duração em minutos. Se omitido, usa duração padrão do tipo."),
+    deal_id: z.number().optional().describe("ID do negócio. SEMPRE informar quando pertence a um deal."),
     person_id: z.number().optional().describe("ID do contato relacionado"),
-    user_id: z.number().optional().describe("ID do usuário responsável"),
+    user_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID do responsável. Ex: 'Eric Luciano', 17987703"),
     note: z.string().optional().describe("Nota/observação"),
-    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar atividade pendente. Use SOMENTE após confirmação explícita do usuário."),
+    force: z.boolean().optional().default(false).describe("Se true, cria mesmo se encontrar atividade pendente."),
   },
   async ({ subject, type, due_date, due_time, duration, deal_id, person_id, user_id, note, force }) => {
+    // ── Resolver nome do responsável ──
+    try { user_id = resolveUser(user_id); } catch (e) { return { content: [{ type: "text", text: e.message }] }; }
     await ensureActivityTypesLoaded();
     const resolvedType = resolveActivityType(type);
 
@@ -1409,20 +1446,22 @@ server.tool(
 
 server.tool(
   "update_activity",
-  `Atualiza uma atividade: marcar como feita, reagendar, mudar responsável ou tipo. Aceita key, nome ou alias como tipo.${ACTIVITY_TYPES_REF}${USERS_REF}`,
+  "Atualiza uma atividade: marcar como feita, reagendar, mudar responsável ou tipo. Aceita nome ou ID para tipo e responsável. Horários em fuso local.",
   {
     activity_id: z.number().describe("ID da atividade"),
     done: z.boolean().optional().describe("Marcar como concluída (true) ou pendente (false)"),
     subject: z.string().optional().describe("Novo assunto"),
-    type: z.string().optional().describe("Novo tipo. Aceita key da API, nome ou alias."),
+    type: z.string().optional().describe("Novo tipo. Aceita key, nome ou alias. Ex: 'whatsapp', 'call'"),
     due_date: z.string().optional().describe("Nova data (YYYY-MM-DD)"),
-    due_time: z.string().optional().describe("Nova hora (HH:MM)"),
+    due_time: z.string().optional().describe("Nova hora em horário local (HH:MM)"),
     duration: z.number().optional().describe("Nova duração em minutos."),
-    user_id: z.number().optional().describe("Novo responsável (ID do usuário)"),
+    user_id: z.union([z.string(), z.number()]).optional().describe("Nome ou ID do novo responsável. Ex: 'Eric Luciano'"),
     deal_id: z.number().optional().describe("Vincular a um negócio (deal_id)"),
     note: z.string().optional().describe("Nova nota/observação"),
   },
   async ({ activity_id, done, subject, type, due_date, due_time, duration, user_id, deal_id, note }) => {
+    // ── Resolver nome do responsável ──
+    try { user_id = resolveUser(user_id); } catch (e) { return { content: [{ type: "text", text: e.message }] }; }
     await ensureActivityTypesLoaded();
     const body = {};
     if (done !== undefined) body.done = done ? 1 : 0;
