@@ -442,6 +442,8 @@ function translateDealFields(deal) {
       } else {
         result[fieldName] = optionsMap[rawValue] || rawValue;
       }
+    } else if (typeof rawValue === "object" && rawValue !== null) {
+      result[fieldName] = rawValue.name || JSON.stringify(rawValue);
     } else {
       result[fieldName] = rawValue;
     }
@@ -588,7 +590,7 @@ server.tool(
 
 server.tool(
   "get_deal",
-  "Retorna detalhes completos de um negócio pelo ID, incluindo campos personalizados com nomes legíveis.",
+  "Retorna dados e campos personalizados de um deal. Para análise completa (com atividades, notas, pessoa e histórico), prefira get_deal_summary.",
   { deal_id: z.number().describe("ID do negócio") },
   async ({ deal_id }) => {
     const data = await pipedriveRequest(`/deals/${deal_id}`);
@@ -948,7 +950,7 @@ server.tool(
 
 server.tool(
   "get_deal_flow",
-  "Retorna o histórico de mudanças de um deal com parsing inteligente. Extrai mudanças de status (open/lost/won), mudanças de etapa, e timestamps exatos. Útil para descobrir data original de perda, motivo de perda, e rastrear movimentações do deal.",
+  "Histórico detalhado de mudanças de um deal (status, etapa, motivo perda). Para visão completa do deal, prefira get_deal_summary.",
   {
     deal_id: z.number().describe("ID do negócio"),
     filter: z.enum(["all", "status", "stage"]).optional().default("all").describe("Filtrar tipo de mudança: 'all' = tudo, 'status' = só mudanças open/lost/won, 'stage' = só mudanças de etapa"),
@@ -1037,6 +1039,201 @@ server.tool(
   }
 );
 
+// ─── DEAL SUMMARY (visão completa) ───────────────────────────────────────────
+
+server.tool(
+  "get_deal_summary",
+  "PREFERENCIAL para analisar deals. Retorna visão completa em uma chamada: dados do deal, campos personalizados, pessoa vinculada (telefone, email, origem), atividades (feitas + pendentes + atrasadas), notas e histórico de movimentação com tempo na etapa atual. Sempre usar este tool ao analisar um negócio.",
+  {
+    deal_id: z.number().describe("ID do negócio"),
+  },
+  async ({ deal_id }) => {
+    await ensureActivityTypesLoaded();
+    const today = new Date().toISOString().split("T")[0];
+
+    // ── 1. Chamadas paralelas: deal + activities + notes + flow ──
+    let dealRes, activitiesRes, notesRes, flowRes;
+    try {
+      [dealRes, activitiesRes, notesRes, flowRes] = await Promise.all([
+        pipedriveRequest(`/deals/${deal_id}`),
+        pipedriveRequest(`/deals/${deal_id}/activities?limit=100`),
+        pipedriveRequest(`/notes?deal_id=${deal_id}&limit=50&sort=add_time DESC`),
+        pipedriveRequest(`/deals/${deal_id}/flow?limit=100`),
+      ]);
+    } catch (e) {
+      return { content: [{ type: "text", text: `Erro ao buscar deal ${deal_id}: ${e.message}` }] };
+    }
+
+    const deal = dealRes.data;
+    if (!deal) return { content: [{ type: "text", text: `Deal ${deal_id} não encontrado.` }] };
+
+    // ── 2. Buscar pessoa vinculada (se existir) ──
+    let person = null;
+    const personId = deal.person_id?.value || deal.person_id;
+    if (personId) {
+      try {
+        const personRes = await pipedriveRequest(`/persons/${personId}`);
+        person = personRes.data;
+      } catch { /* sem pessoa — segue */ }
+    }
+
+    // ── 3. Montar seções ──
+    const sections = [];
+
+    // --- DEAL ---
+    const dealLink = `https://${COMPANY_DOMAIN}.pipedrive.com/deal/${deal.id}`;
+    const valor = deal.value ? `R$ ${Number(deal.value).toLocaleString("pt-BR")}` : "Sem valor";
+    const pipeline = PIPELINE_MAP[deal.pipeline_id] || deal.pipeline_id;
+    const etapa = STAGE_MAP[deal.stage_id] || deal.stage_id;
+
+    // Tempo na etapa atual
+    const flowItems = flowRes.data || [];
+    let stageEntryDate = deal.add_time?.split(" ")[0]; // fallback: data de criação
+    for (const item of flowItems) {
+      if (item.object === "dealChange" && item.data?.field_key === "stage_id" && String(item.data.new_value) === String(deal.stage_id)) {
+        stageEntryDate = item.timestamp?.split(" ")[0];
+        break;
+      }
+    }
+    let diasNaEtapa = "";
+    if (stageEntryDate) {
+      const diffMs = new Date(today) - new Date(stageEntryDate);
+      const dias = Math.floor(diffMs / 86400000);
+      diasNaEtapa = dias === 0 ? "hoje" : dias === 1 ? "1 dia" : `${dias} dias`;
+    }
+
+    sections.push(
+      `DEAL: ${deal.title} (ID ${deal.id})\n${dealLink}\n` +
+      `Pipeline: ${pipeline} | Etapa: ${etapa}${diasNaEtapa ? ` (há ${diasNaEtapa})` : ""}\n` +
+      `Valor: ${valor} | Status: ${deal.status}\n` +
+      `Responsável: ${deal.owner_name || "N/A"}\n` +
+      `Criado: ${deal.add_time || "N/A"} | Previsão: ${deal.expected_close_date || "N/A"}`
+    );
+
+    // --- CAMPOS PERSONALIZADOS DO DEAL ---
+    const customFields = [];
+    for (const [apiKey, fieldName] of Object.entries(KEY_TO_NAME)) {
+      const rawValue = deal[apiKey];
+      if (rawValue === null || rawValue === undefined || rawValue === "") continue;
+      const optionsMap = KEY_TO_OPTIONS[apiKey];
+      let displayValue;
+      if (optionsMap) {
+        if (String(rawValue).includes(",")) {
+          displayValue = String(rawValue).split(",").map((id) => optionsMap[id.trim()] || id).join(", ");
+        } else {
+          displayValue = optionsMap[rawValue] || rawValue;
+        }
+      } else if (typeof rawValue === "object" && rawValue !== null) {
+        displayValue = rawValue.name || JSON.stringify(rawValue);
+      } else {
+        displayValue = rawValue;
+      }
+      customFields.push(`${fieldName}: ${displayValue}`);
+    }
+    if (customFields.length > 0) {
+      sections.push("CAMPOS PERSONALIZADOS:\n" + customFields.join("\n"));
+    }
+
+    // --- PESSOA ---
+    if (person) {
+      const phones = (person.phone || []).filter(p => p.value).map(p => p.value).join(", ") || "N/A";
+      const emails = (person.email || []).filter(e => e.value).map(e => e.value).join(", ") || "N/A";
+      const orgName = person.org_id?.name || deal.org_name || "N/A";
+
+      // Campos personalizados da pessoa
+      const personCustom = [];
+      for (const [apiKey, fieldName] of Object.entries(PERSON_KEY_TO_NAME)) {
+        const rawValue = person[apiKey];
+        if (rawValue === null || rawValue === undefined || rawValue === "") continue;
+        const optionsMap = PERSON_KEY_TO_OPTIONS[apiKey];
+        let displayValue;
+        if (optionsMap) {
+          displayValue = optionsMap[rawValue] || rawValue;
+        } else if (typeof rawValue === "object" && rawValue !== null) {
+          displayValue = rawValue.name || JSON.stringify(rawValue);
+        } else {
+          displayValue = rawValue;
+        }
+        personCustom.push(`${fieldName}: ${displayValue}`);
+      }
+
+      let personSection = `PESSOA: ${person.name} (ID ${person.id})\nTelefone: ${phones}\nEmail: ${emails}\nEmpresa: ${orgName}`;
+      if (personCustom.length > 0) personSection += "\n" + personCustom.join("\n");
+      sections.push(personSection);
+    }
+
+    // --- ATIVIDADES ---
+    const allActs = activitiesRes.data || [];
+    const pending = allActs.filter(a => !a.done);
+    const done = allActs.filter(a => a.done);
+
+    const formatAct = (a) => {
+      const tipo = ACTIVITY_TYPES[a.type]?.name || a.type;
+      const hora = a.due_time ? ` ${utcToLocal(a.due_time, a.due_date)}` : "";
+      const atrasada = !a.done && a.due_date && a.due_date < today ? " [ATRASADA]" : "";
+      const resp = a.owner_name ? ` | Resp: ${a.owner_name}` : "";
+      return `- ${a.subject} | ${a.due_date || "sem data"}${hora} | ${tipo}${resp}${atrasada}`;
+    };
+
+    if (pending.length > 0) {
+      // Ordenar: atrasadas primeiro, depois por data
+      pending.sort((a, b) => (a.due_date || "9999").localeCompare(b.due_date || "9999"));
+      sections.push(`ATIVIDADES PENDENTES (${pending.length}):\n${pending.map(formatAct).join("\n")}`);
+    } else {
+      sections.push("ATIVIDADES PENDENTES: nenhuma");
+    }
+
+    if (done.length > 0) {
+      // Mais recentes primeiro
+      done.sort((a, b) => (b.due_date || "").localeCompare(a.due_date || ""));
+      const recentDone = done.slice(0, 20); // últimas 20
+      let doneSection = `ATIVIDADES CONCLUÍDAS (${done.length}${done.length > 20 ? ", mostrando 20 mais recentes" : ""}):\n${recentDone.map(formatAct).join("\n")}`;
+      sections.push(doneSection);
+    } else {
+      sections.push("ATIVIDADES CONCLUÍDAS: nenhuma");
+    }
+
+    // --- NOTAS ---
+    const notes = (notesRes.data || []).map(n => {
+      const content = (n.content || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const preview = content.length > 300 ? content.substring(0, 300) + "..." : content;
+      return `- [${n.add_time?.split(" ")[0] || "N/A"}] ${n.user?.name || "N/A"}: ${preview}`;
+    });
+    if (notes.length > 0) {
+      sections.push(`NOTAS (${notes.length}):\n${notes.join("\n")}`);
+    } else {
+      sections.push("NOTAS: nenhuma");
+    }
+
+    // --- HISTÓRICO (mudanças de etapa e status) ---
+    const history = [];
+    for (const item of flowItems) {
+      if (item.object === "dealChange" && item.data) {
+        const d = item.data;
+        const ts = item.timestamp?.split(" ")[0] || "N/A";
+        if (d.field_key === "stage_id") {
+          const de = STAGE_MAP[d.old_value] || d.old_value;
+          const para = STAGE_MAP[d.new_value] || d.new_value;
+          history.push(`- ${ts}: Etapa ${de} -> ${para}`);
+        }
+        if (d.field_key === "status") {
+          history.push(`- ${ts}: Status ${d.old_value} -> ${d.new_value}`);
+        }
+        if (d.field_key === "lost_reason" && d.new_value) {
+          history.push(`- ${ts}: Motivo perda: ${d.new_value}`);
+        }
+      }
+    }
+    if (history.length > 0) {
+      sections.push(`HISTÓRICO (${history.length} mudanças):\n${history.join("\n")}`);
+    } else {
+      sections.push("HISTÓRICO: sem mudanças de etapa/status");
+    }
+
+    return { content: [{ type: "text", text: sections.join("\n\n") }] };
+  }
+);
+
 // ─── NOTAS ────────────────────────────────────────────────────────────────────
 
 server.tool(
@@ -1096,7 +1293,7 @@ server.tool(
 
 server.tool(
   "list_deal_notes",
-  "Lista as notas de um negócio.",
+  "Lista notas de um deal. Para visão completa (com atividades, campos e histórico), prefira get_deal_summary.",
   {
     deal_id: z.number().describe("ID do negócio"),
     limit: z.number().optional().default(100).describe("Quantidade máxima de resultados (máx 500)"),
@@ -1553,7 +1750,7 @@ server.tool(
 
 server.tool(
   "list_deal_activities",
-  "Lista TODAS as atividades de um negócio específico (via endpoint /deals/{id}/activities). Mais confiável que list_activities com deal_id, pois filtra corretamente no servidor.",
+  "Lista atividades de um deal com filtro por status. Para visão completa do deal, prefira get_deal_summary.",
   {
     deal_id: z.number().describe("ID do negócio"),
     done: z.enum(["0", "1", "all"]).optional().default("all").describe("Filtrar por status: '0' = pendentes, '1' = concluídas, 'all' = todas"),
