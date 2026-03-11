@@ -768,37 +768,46 @@ server.tool(
       }
     }
 
-    // ── 4. Buscar/criar pessoa (telefone + email) ──
+    // ── 4. Buscar/criar pessoa (telefone E email em paralelo) ──
     let person_id = undefined;
     let personIsNew = false;
     const cleanPhone = phone.replace(/\D/g, "");
+    const last8 = cleanPhone.slice(-8); // ignora DDI, DDD e 9º dígito WhatsApp
 
-    // 4a. Busca por telefone
-    try {
-      const personSearch = await pipedriveRequest(`/persons/search?term=${encodeURIComponent(cleanPhone)}&fields=phone&limit=5`);
-      const personMatch = (personSearch.data?.items || []).find((i) => {
-        const phones = i.item.phones || [];
-        return phones.some((p) => p.replace(/\D/g, "").includes(cleanPhone) || cleanPhone.includes(p.replace(/\D/g, "")));
-      });
-      if (personMatch) {
-        person_id = personMatch.item.id;
-        log.push(`Pessoa já existia (telefone): "${personMatch.item.name}" (ID ${person_id})`);
-      }
-    } catch { /* continua */ }
+    // 4a. Busca paralela: telefone (últimos 8 dígitos) + email
+    const searchPromises = [];
+    if (last8.length === 8) {
+      searchPromises.push(
+        pipedriveRequest(`/persons/search?term=${encodeURIComponent(last8)}&fields=phone&limit=5`)
+          .then((res) => {
+            const match = (res.data?.items || []).find((i) => {
+              const phones = i.item.phones || [];
+              return phones.some((p) => p.replace(/\D/g, "").slice(-8) === last8);
+            });
+            return match ? { id: match.item.id, name: match.item.name, via: "telefone" } : null;
+          })
+          .catch(() => null)
+      );
+    }
+    if (email) {
+      searchPromises.push(
+        pipedriveRequest(`/persons/search?term=${encodeURIComponent(email)}&fields=email&limit=5`)
+          .then((res) => {
+            const match = (res.data?.items || []).find((i) => {
+              const emails = i.item.emails || [];
+              return emails.some((e) => e.toLowerCase() === email.toLowerCase());
+            });
+            return match ? { id: match.item.id, name: match.item.name, via: "email" } : null;
+          })
+          .catch(() => null)
+      );
+    }
 
-    // 4b. Busca por email (fallback se telefone não encontrou)
-    if (!person_id && email) {
-      try {
-        const emailSearch = await pipedriveRequest(`/persons/search?term=${encodeURIComponent(email)}&fields=email&limit=5`);
-        const emailMatch = (emailSearch.data?.items || []).find((i) => {
-          const emails = i.item.emails || [];
-          return emails.some((e) => e.toLowerCase() === email.toLowerCase());
-        });
-        if (emailMatch) {
-          person_id = emailMatch.item.id;
-          log.push(`Pessoa já existia (email): "${emailMatch.item.name}" (ID ${person_id})`);
-        }
-      } catch { /* continua */ }
+    const searchResults = await Promise.all(searchPromises);
+    const found = searchResults.find((r) => r !== null);
+    if (found) {
+      person_id = found.id;
+      log.push(`Pessoa já existia (${found.via}): "${found.name}" (ID ${person_id})`);
     }
 
     if (!person_id) {
