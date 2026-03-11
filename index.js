@@ -599,7 +599,7 @@ server.tool(
 
 server.tool(
   "create_deal",
-  "Cria um novo negócio no Pipedrive. Aceita nome ou ID para pipeline, etapa e responsável (resolve automaticamente via config). Se person_id for informado, verifica se já existe deal aberto. Aceita campos personalizados via custom_fields.",
+  "Cria negócio quando pessoa e org já existem (IDs conhecidos). Para novos leads, prefira create_deal_full. Aceita nome ou ID para pipeline, etapa e responsável. Verifica deals abertos.",
   {
     title: z.string().describe("Título do negócio"),
     value: z.number().optional().describe("Valor do negócio"),
@@ -684,7 +684,7 @@ server.tool(
 
 server.tool(
   "create_deal_full",
-  "Cria deal completo em uma chamada: pessoa + organização + deal + atividades. Busca duplicatas automaticamente. Propaga origem para pessoa (1x, nunca muda) e deal. Aceita nome ou ID para pipeline, etapa e responsável.",
+  "PREFERENCIAL para criar novos deals. Cria deal completo em uma chamada: pessoa + organização + deal + atividades. Busca duplicatas automaticamente. Propaga origem para pessoa (1x, nunca muda) e deal. Aceita nome ou ID para pipeline, etapa e responsável. Sempre usar este tool ao registrar um novo lead/oportunidade.",
   {
     // ── Pessoa ──
     person_name: z.string().describe("Nome completo do contato"),
@@ -1390,7 +1390,7 @@ server.tool(
 
 server.tool(
   "create_organization",
-  "Cria uma nova organização/empresa no Pipedrive. Verifica duplicatas automaticamente. Aceita nome ou ID para responsável.",
+  "Cria organização isolada. Para novos leads, prefira create_deal_full (já cria org junto). Verifica duplicatas automaticamente.",
   {
     name: z.string().describe("Nome da organização"),
     address: z.string().optional().describe("Endereço da organização"),
