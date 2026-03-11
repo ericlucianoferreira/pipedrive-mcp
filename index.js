@@ -1631,6 +1631,13 @@ server.tool(
         } else { dOther++; }
         dealMapping[field.name] = entry;
       }
+      // Preservar descriptions e sections do config anterior
+      const existingDealFields = existing.deal_custom_fields || {};
+      for (const [name, entry] of Object.entries(dealMapping)) {
+        const prev = existingDealFields[name];
+        if (prev?.description) entry.description = prev.description;
+        if (prev?.section) entry.section = prev.section;
+      }
       config.deal_custom_fields = dealMapping;
       summary.push(`Campos de deals: ${dealCustom.length} (${dEnum} enum, ${dSet} set, ${dOther} outros)`);
 
@@ -1647,6 +1654,12 @@ server.tool(
           if (field.field_type === "enum") pEnum++; else pSet++;
         } else { pOther++; }
         personMapping[field.name] = entry;
+      }
+      // Preservar descriptions do config anterior
+      const existingPersonFields = existing.person_custom_fields || {};
+      for (const [name, entry] of Object.entries(personMapping)) {
+        const prev = existingPersonFields[name];
+        if (prev?.description) entry.description = prev.description;
       }
       config.person_custom_fields = personMapping;
       summary.push(`Campos de contatos: ${personCustom.length} (${pEnum} enum, ${pSet} set, ${pOther} outros)`);
