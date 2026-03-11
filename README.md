@@ -16,7 +16,7 @@ Funciona com **qualquer conta do Pipedrive** — cada usuario configura seu prop
 - **Produtos**: listar, vincular a negocios
 - **Campos personalizados**: sincronizacao automatica, atualizar com protecao contra sobrescrita
 - **config.js unificado**: todos os dados de referencia em um unico arquivo distribuivel
-- **Referencias embutidas**: pipelines, etapas, usuarios e tipos de atividade embutidos nas descricoes dos tools
+- **Resolucao por nome**: pipelines, etapas e usuarios podem ser passados por nome ou ID — o MCP resolve automaticamente via config.js
 - **Paginacao**: suporte a `start`/`limit` em todos os endpoints de listagem + `buscar_todos` para deals
 - **Dominio dinamico**: links de resposta usam o dominio da sua conta automaticamente
 - **Fuso horario**: conversao automatica de horarios (configuravel via variavel de ambiente)
