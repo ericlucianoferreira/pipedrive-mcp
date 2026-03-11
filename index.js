@@ -768,10 +768,12 @@ server.tool(
       }
     }
 
-    // ── 4. Buscar/criar pessoa ──
+    // ── 4. Buscar/criar pessoa (telefone + email) ──
     let person_id = undefined;
     let personIsNew = false;
     const cleanPhone = phone.replace(/\D/g, "");
+
+    // 4a. Busca por telefone
     try {
       const personSearch = await pipedriveRequest(`/persons/search?term=${encodeURIComponent(cleanPhone)}&fields=phone&limit=5`);
       const personMatch = (personSearch.data?.items || []).find((i) => {
@@ -780,9 +782,24 @@ server.tool(
       });
       if (personMatch) {
         person_id = personMatch.item.id;
-        log.push(`Pessoa já existia: "${personMatch.item.name}" (ID ${person_id})`);
+        log.push(`Pessoa já existia (telefone): "${personMatch.item.name}" (ID ${person_id})`);
       }
-    } catch { /* continua pra criar */ }
+    } catch { /* continua */ }
+
+    // 4b. Busca por email (fallback se telefone não encontrou)
+    if (!person_id && email) {
+      try {
+        const emailSearch = await pipedriveRequest(`/persons/search?term=${encodeURIComponent(email)}&fields=email&limit=5`);
+        const emailMatch = (emailSearch.data?.items || []).find((i) => {
+          const emails = i.item.emails || [];
+          return emails.some((e) => e.toLowerCase() === email.toLowerCase());
+        });
+        if (emailMatch) {
+          person_id = emailMatch.item.id;
+          log.push(`Pessoa já existia (email): "${emailMatch.item.name}" (ID ${person_id})`);
+        }
+      } catch { /* continua */ }
+    }
 
     if (!person_id) {
       personIsNew = true;
